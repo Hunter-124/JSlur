@@ -1,0 +1,298 @@
+package jobs
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"strings"
+
+	"autoapply/internal/browser"
+	"autoapply/internal/config"
+	"autoapply/internal/store"
+)
+
+// visionBrowser searches job boards the legitimate way: it drives a real browser
+// to each board's normal search-results page (replaying any connected session so
+// it looks like a signed-in human), screenshots the rendered page, and asks a
+// vision-capable AI model to read the listings off the images. Because it
+// navigates like a person and never touches a raw scrape/HTTP endpoint, it isn't
+// rate-limited or Cloudflare-blocked the way the plain-HTTP scrapers can be.
+//
+// It needs a vision-capable AI provider, injected by the engine as q.Vision.
+// Without one it returns a friendly note and the aggregator skips it.
+type visionBrowser struct{}
+
+func (visionBrowser) ID() string             { return "visionbrowser" }
+func (visionBrowser) Name() string           { return "AI Browser Search (vision)" }
+func (visionBrowser) NeedsCredentials() bool { return false }
+
+// visionBoard describes one board the vision searcher knows how to drive.
+type visionBoard struct {
+	id   string
+	name string
+	// account is the connected-account id whose session (cookies + UA) to replay,
+	// or "" when the board needs none for a logged-out search.
+	account string
+	// searchURL builds the human results-page URL for a keyword + focus.
+	searchURL func(keyword string, focus config.JobFocus) string
+	// isPosting reports whether a link looks like an individual posting on this
+	// board, so we can hand the model real URLs to attach to each listing.
+	isPosting func(string) bool
+}
+
+var visionBoardList = []visionBoard{
+	{
+		id: "indeed", name: "Indeed",
+		searchURL: func(kw string, f config.JobFocus) string {
+			return "https://www.indeed.com/jobs?q=" + url.QueryEscape(kw) + "&l=" + url.QueryEscape(f.Location.Query())
+		},
+		isPosting: func(u string) bool {
+			return strings.Contains(u, "/rc/clk") || strings.Contains(u, "/viewjob") || strings.Contains(u, "jk=") || strings.Contains(u, "/pagead/clk")
+		},
+	},
+	{
+		id: "linkedin", name: "LinkedIn", account: "linkedin",
+		searchURL: func(kw string, f config.JobFocus) string {
+			loc := f.Location.Query()
+			if loc == "" {
+				loc = "United States"
+			}
+			return "https://www.linkedin.com/jobs/search?keywords=" + url.QueryEscape(kw) + "&location=" + url.QueryEscape(loc)
+		},
+		isPosting: func(u string) bool { return strings.Contains(u, "/jobs/view/") },
+	},
+	{
+		id: "ziprecruiter", name: "ZipRecruiter", account: "ziprecruiter",
+		searchURL: func(kw string, f config.JobFocus) string {
+			return "https://www.ziprecruiter.com/jobs-search?search=" + url.QueryEscape(kw) + "&location=" + url.QueryEscape(f.Location.Query())
+		},
+		isPosting: func(u string) bool {
+			return strings.Contains(u, "/jobs/") || strings.Contains(u, "/job/") || strings.Contains(u, "/c/")
+		},
+	},
+	{
+		id: "google", name: "Google Jobs",
+		searchURL: func(kw string, f config.JobFocus) string {
+			q := strings.TrimSpace(kw + " jobs " + f.Location.Query())
+			return "https://www.google.com/search?ibp=htl;jobs&q=" + url.QueryEscape(q)
+		},
+		// Google Jobs renders results as JS panels with no per-listing href, so we
+		// rely on the visible title/company alone (url comes back empty).
+		isPosting: func(string) bool { return false },
+	},
+}
+
+var visionBoards = func() map[string]visionBoard {
+	m := make(map[string]visionBoard, len(visionBoardList))
+	for _, b := range visionBoardList {
+		m[b.id] = b
+	}
+	return m
+}()
+
+func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error) {
+	if q.Vision == nil {
+		return nil, fmt.Errorf("needs a vision-capable AI provider — set one in Settings, then enable this source")
+	}
+	queries := searchQueries(q.Focus)
+	if len(queries) == 0 {
+		if q.Focus.Location.Query() == "" {
+			return nil, fmt.Errorf("describe your target roles (or a location) in Job Focus to use AI Browser Search")
+		}
+		queries = []string{""}
+	}
+	if len(queries) > 3 {
+		queries = queries[:3] // browser rendering is slow; cap roles
+	}
+
+	boards := q.Creds.Browser.Boards
+	if len(boards) == 0 {
+		boards = []string{"indeed", "linkedin"}
+	}
+	perBoard := limit(q.Focus)
+	maxScreens := q.Creds.Browser.MaxScreens
+	if maxScreens <= 0 {
+		maxScreens = 3
+	}
+
+	sess, err := browser.NewSession(ctx, browser.SessionOptions{Headful: q.Creds.Browser.Headful})
+	if err != nil {
+		return nil, fmt.Errorf("could not start a browser for vision search: %w", err)
+	}
+	defer sess.Close()
+
+	out := map[string]store.Job{}
+	var firstErr error
+	for _, boardID := range boards {
+		b, ok := visionBoards[boardID]
+		if !ok {
+			continue
+		}
+		// Replay a connected session for this board if we have one (cookies + UA).
+		cookie, ua := "", ""
+		if b.account != "" {
+			if acc, ok := q.Creds.Accounts[b.account]; ok {
+				cookie, ua = acc.Cookie, acc.UserAgent
+			}
+		}
+		for _, kw := range queries {
+			if ctx.Err() != nil {
+				break
+			}
+			pageURL := b.searchURL(kw, q.Focus)
+			shots, err := sess.Shots(ctx, pageURL, cookie, ua, maxScreens)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if len(shots.Images) == 0 {
+				continue
+			}
+			for _, j := range vb.readListings(ctx, q, b, shots, perBoard, &firstErr) {
+				if _, dup := out[j.ID]; !dup {
+					out[j.ID] = j
+				}
+			}
+		}
+	}
+
+	if len(out) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return mapToSlice(out), nil
+}
+
+// readListings sends the screenshots (plus candidate posting links) to the
+// vision model and converts its JSON reply into store.Job records.
+func (vb visionBrowser) readListings(ctx context.Context, q Query, b visionBoard, shots browser.Shots, max int, firstErr *error) []store.Job {
+	// Candidate posting links for the model to attach to listings. Keep the query
+	// string — some boards (e.g. Indeed) carry the job id there (?jk=…) — and drop
+	// only the fragment.
+	var links []browser.Link
+	for _, l := range shots.Links {
+		if b.isPosting != nil && b.isPosting(l.URL) {
+			links = append(links, browser.Link{Text: l.Text, URL: stripFragment(l.URL)})
+		}
+		if len(links) >= 60 {
+			break
+		}
+	}
+
+	raw, err := q.Vision(ctx, buildVisionPrompt(b.name, q.Focus, links, max), shots.Images)
+	if err != nil {
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		return nil
+	}
+	parsed, err := parseVisionJobs(raw)
+	if err != nil {
+		if *firstErr == nil {
+			*firstErr = err
+		}
+		return nil
+	}
+
+	out := make([]store.Job, 0, len(parsed))
+	for _, p := range parsed {
+		title := strings.TrimSpace(p.Title)
+		if title == "" {
+			continue
+		}
+		link := stripFragment(strings.TrimSpace(p.URL))
+		if link != "" && !strings.HasPrefix(link, "http") {
+			link = "" // ignore relative/garbage the model may have invented
+		}
+		// Stable id: the posting URL when present, else a board+title+company key so
+		// the same listing isn't re-added on every search.
+		seed := link
+		if seed == "" {
+			seed = "v|" + b.id + "|" + strings.ToLower(title+"|"+p.Company)
+		}
+		id := store.MakeJobID(vb.ID(), seed)
+		out = append(out, store.Job{
+			ID:          id,
+			Source:      vb.ID(),
+			Title:       title,
+			Company:     strings.TrimSpace(p.Company),
+			Location:    strings.TrimSpace(p.Location),
+			Remote:      p.Remote || looksRemote(title, p.Location),
+			URL:         link,
+			Salary:      strings.TrimSpace(p.Salary),
+			Description: strings.TrimSpace(p.Description),
+		})
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// visionJob is one listing as returned by the vision model.
+type visionJob struct {
+	Title       string `json:"title"`
+	Company     string `json:"company"`
+	Location    string `json:"location"`
+	Remote      bool   `json:"remote"`
+	Salary      string `json:"salary"`
+	URL         string `json:"url"`
+	Description string `json:"description"`
+}
+
+func buildVisionPrompt(boardName string, focus config.JobFocus, links []browser.Link, max int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The attached images are screenshots of the %s job-search results page.\n", boardName)
+	if interest := strings.TrimSpace(focus.Interest); interest != "" {
+		fmt.Fprintf(&b, "The user is looking for: %s\n", interest)
+	}
+	b.WriteString("\nRead EVERY distinct job listing visible across the images and return them as JSON.\n")
+	if len(links) > 0 {
+		b.WriteString("\nHere are hyperlinks found on the same page (text → url). For each listing, set \"url\" to the matching link from this list (match by the job title / company text). If you can't confidently match one, use an empty string — do NOT invent or guess a URL.\n")
+		for _, l := range links {
+			t := strings.Join(strings.Fields(l.Text), " ")
+			if len(t) > 80 {
+				t = t[:80]
+			}
+			fmt.Fprintf(&b, "- %s → %s\n", t, l.URL)
+		}
+	}
+	fmt.Fprintf(&b, "\nReturn ONLY a JSON array (no prose, no code fences), at most %d items, of exactly this shape:\n", max)
+	b.WriteString(`[{"title":"","company":"","location":"City, ST","remote":false,"salary":"","url":"","description":""}]`)
+	b.WriteString("\nRules: include only real listings you can actually see in the images; copy the title, company and location exactly as shown; set \"salary\" only if a pay figure is shown; set \"remote\" true only if the listing says remote/work-from-home; set \"description\" to the short summary snippet shown on the card (one or two lines, or empty if none). If no jobs are visible, return [].")
+	return b.String()
+}
+
+// stripFragment removes a URL's #fragment (and trims space) while preserving the
+// query string, which on some boards carries the posting id.
+func stripFragment(u string) string {
+	u = strings.TrimSpace(u)
+	if i := strings.IndexByte(u, '#'); i >= 0 {
+		u = u[:i]
+	}
+	return u
+}
+
+// parseVisionJobs extracts the JSON array from the model output, tolerating code
+// fences and surrounding prose.
+func parseVisionJobs(raw string) ([]visionJob, error) {
+	s := strings.TrimSpace(raw)
+	if i := strings.Index(s, "```"); i >= 0 {
+		s = s[i+3:]
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "json"), "JSON")
+		if j := strings.LastIndex(s, "```"); j >= 0 {
+			s = s[:j]
+		}
+	}
+	start, end := strings.Index(s, "["), strings.LastIndex(s, "]")
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("no JSON array in vision response")
+	}
+	var jobs []visionJob
+	if err := json.Unmarshal([]byte(s[start:end+1]), &jobs); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}

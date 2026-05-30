@@ -1,0 +1,21 @@
+# Build output
+autoapply.exe
+autoapply-headless.exe
+autoapply
+/dist/
+
+# Local run data (config + discovered jobs live in the per-user config dir by
+# default, but if you run with -data ./something it lands here)
+/.testdata/
+/.rundata/
+/applications/
+
+# Personal data — the user's own résumé used for local testing. NEVER publish.
+resume.txt
+
+# Local agent / editor config (machine-specific absolute paths, local settings)
+/.claude/
+
+# Editor / OS
+.DS_Store
+*.swp

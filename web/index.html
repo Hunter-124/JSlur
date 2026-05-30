@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoApply — AI Job Application Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>" />
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">🎯</span>
+        <div>
+          <div class="brand-name">AutoApply</div>
+          <div class="brand-sub">AI job assistant</div>
+        </div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="home"><span>🏠</span> Home</button>
+        <button class="nav-item" data-view="dashboard" data-adv><span>📊</span> Dashboard</button>
+        <button class="nav-item" data-view="jobs"><span>💼</span> Jobs <span class="nav-count" id="navJobCount"></span></button>
+        <button class="nav-item" data-view="profile" data-adv><span>👤</span> Profile</button>
+        <button class="nav-item" data-view="focus" data-adv><span>🎯</span> Job Focus</button>
+        <button class="nav-item" data-view="ai"><span>⚙️</span> Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="mode-toggle" id="modeToggle">
+          <button class="mode-btn" data-mode="simple">Simple</button>
+          <button class="mode-btn" data-mode="advanced">Advanced</button>
+        </div>
+        <div class="status-pill" id="enginePill"><span class="dot"></span><span id="enginePillText">idle</span></div>
+        <div class="provider-line" id="providerLine">—</div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <!-- Home (simple guided flow) -->
+      <section class="view active" id="view-home">
+        <header class="view-head"><h1>Find your next job</h1></header>
+        <div class="card">
+          <ol class="steps">
+            <li>
+              <h3>1 · Your résumé</h3>
+              <p class="hint">Upload it (PDF, Word, or text) — the AI reads it to decide what roles to search for. Or paste it below.</p>
+              <input type="file" id="home_resume_file" accept=".pdf,.docx,.txt,.md,.text" />
+              <details class="paste"><summary>or paste résumé text</summary>
+                <textarea id="home_resume_text" rows="8" placeholder="Paste your résumé here…"></textarea>
+              </details>
+              <div class="home-parsed" id="home_parsed" hidden></div>
+            </li>
+            <li>
+              <h3>2 · Where do you want to work?</h3>
+              <div class="form-grid">
+                <label>City<input id="home_city" type="text" placeholder="Chicago" /></label>
+                <label>State<input id="home_state" type="text" placeholder="IL" /></label>
+                <label>ZIP<input id="home_zip" type="text" placeholder="60601" /></label>
+                <label>Radius (miles)<input id="home_radius" type="number" min="0" max="200" value="25" /></label>
+              </div>
+              <label class="check"><input id="home_remote" type="checkbox" checked /> Also include remote roles</label>
+            </li>
+            <li>
+              <h3>3 · Let the AI take it from here</h3>
+              <p class="hint">It picks the roles to search (from your résumé), finds matches near you, filters out the ones that don't fit, and tailors a résumé + cover letter for each. Watch the <a href="#" data-goto="jobs">Jobs</a> tab fill up.</p>
+              <button class="btn primary big" id="btnHomeGo">✨ Find jobs for me</button>
+              <p class="hint" id="home_ai_hint" hidden>⚠ Add an AI provider in <a href="#" data-goto="ai">Settings</a> first so it can read your résumé and tailor applications.</p>
+            </li>
+          </ol>
+          <div class="home-status" id="home_status" hidden></div>
+        </div>
+      </section>
+
+      <!-- Dashboard -->
+      <section class="view" id="view-dashboard">
+        <header class="view-head">
+          <h1>Dashboard</h1>
+          <div class="actions">
+            <button class="btn" id="btnRunOnce">⚡ Run full pipeline</button>
+            <button class="btn" id="btnOpenFolder">📁 Export folder</button>
+            <button class="btn primary" id="btnToggleAuto">▶ Start automation</button>
+          </div>
+        </header>
+
+        <!-- Three-stage AI pipeline -->
+        <div class="pipeline">
+          <div class="card stage">
+            <div class="stage-head"><span class="stage-num">1</span><h3>🔍 Search</h3></div>
+            <p class="stage-desc">Pull listings from your enabled job boards.</p>
+            <div class="stage-metric"><b id="pmTotal">0</b> jobs found</div>
+            <button class="btn" id="btnSearch">Search now</button>
+          </div>
+          <div class="stage-arrow">→</div>
+          <div class="card stage">
+            <div class="stage-head"><span class="stage-num">2</span><h3>🧪 Filter <span class="ai-tag">AI</span></h3></div>
+            <p class="stage-desc">Score relevance and drop obvious mismatches before tailoring.</p>
+            <div class="stage-metric"><b id="pmMatched">0</b> matched</div>
+            <button class="btn" id="btnFilter">Filter with AI</button>
+          </div>
+          <div class="stage-arrow">→</div>
+          <div class="card stage">
+            <div class="stage-head"><span class="stage-num">3</span><h3>✨ Tailor &amp; Apply <span class="ai-tag">AI</span></h3></div>
+            <p class="stage-desc">Tailor résumé + cover letter and resolve the official apply page.</p>
+            <div class="stage-metric"><b id="pmReady">0</b> ready</div>
+            <button class="btn" id="btnTailor">Tailor matched</button>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card stat" data-status="discovered"><div class="stat-num" id="statDiscovered">0</div><div class="stat-label">Discovered</div></div>
+          <div class="card stat" data-status="matched"><div class="stat-num" id="statMatched">0</div><div class="stat-label">Matched</div></div>
+          <div class="card stat" data-status="ready"><div class="stat-num" id="statReady">0</div><div class="stat-label">Ready to review</div></div>
+          <div class="card stat" data-status="applied"><div class="stat-num" id="statApplied">0</div><div class="stat-label">Applied</div></div>
+          <div class="card stat" data-status="skipped"><div class="stat-num" id="statSkipped">0</div><div class="stat-label">Skipped</div></div>
+          <div class="card stat" data-status="error"><div class="stat-num" id="statError">0</div><div class="stat-label">Errors</div></div>
+        </div>
+
+        <div class="card info-card" id="setupHint" hidden>
+          <strong>👋 Let's get set up.</strong>
+          <ol>
+            <li>Fill in the <a href="#" data-goto="profile">Profile</a> tab (especially your base resume).</li>
+            <li>Add an AI key in <a href="#" data-goto="ai">AI &amp; Apply</a> (or point it at a local model) — and optionally a free Adzuna/USAJOBS key for US location search.</li>
+            <li>In <a href="#" data-goto="focus">Job Focus</a>, describe your target roles and set your city/ZIP + radius, then hit <em>Search now</em>.</li>
+          </ol>
+        </div>
+
+        <div class="card log-card">
+          <div class="card-head"><h2>Activity log</h2><button class="btn tiny" id="btnClearLog">clear</button></div>
+          <div class="log" id="log"></div>
+        </div>
+      </section>
+
+      <!-- Jobs -->
+      <section class="view" id="view-jobs">
+        <header class="view-head">
+          <h1>Jobs</h1>
+          <div class="actions">
+            <select id="jobFilter" class="select">
+              <option value="">All statuses</option>
+              <option value="discovered">Discovered</option>
+              <option value="matched">Matched</option>
+              <option value="ready">Ready</option>
+              <option value="applied">Applied</option>
+              <option value="interviewing">Interviewing</option>
+              <option value="offer">Offer</option>
+              <option value="rejected">Rejected</option>
+              <option value="skipped">Skipped</option>
+              <option value="error">Error</option>
+            </select>
+            <button class="btn" id="btnSearch2">🔍 Search now</button>
+          </div>
+        </header>
+        <div class="job-list" id="jobList"></div>
+        <div class="empty" id="jobsEmpty">No jobs yet. Set your focus and hit <strong>Search now</strong>.</div>
+      </section>
+
+      <!-- Profile -->
+      <section class="view" id="view-profile">
+        <header class="view-head"><h1>Candidate Profile</h1><div class="actions"><button class="btn primary" data-save>💾 Save</button></div></header>
+        <div class="card">
+          <div class="form-grid">
+            <label>Full name<input id="p_name" type="text" placeholder="Ada Lovelace" /></label>
+            <label>Headline<input id="p_headline" type="text" placeholder="Senior Backend Engineer" /></label>
+            <label>Email<input id="p_email" type="email" placeholder="ada@example.com" /></label>
+            <label>Phone<input id="p_phone" type="text" placeholder="+1 555 010 0000" /></label>
+            <label>Location<input id="p_location" type="text" placeholder="Remote / Berlin, DE" /></label>
+            <label>LinkedIn<input id="p_linkedin" type="text" placeholder="linkedin.com/in/…" /></label>
+            <label>GitHub<input id="p_github" type="text" placeholder="github.com/…" /></label>
+            <label>Website<input id="p_website" type="text" placeholder="https://…" /></label>
+          </div>
+          <label class="block">Skills <span class="hint">(comma separated)</span>
+            <input id="p_skills" type="text" placeholder="Go, PostgreSQL, Kubernetes, gRPC" />
+          </label>
+          <label class="block">Professional summary
+            <textarea id="p_summary" rows="3" placeholder="A short paragraph about you…"></textarea>
+          </label>
+          <label class="block">Base resume <span class="hint">(plain text / markdown — the AI tailors this per job and will not invent things you don't list here)</span>
+            <textarea id="p_resume" rows="16" placeholder="Paste your full master resume here…"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <!-- Focus -->
+      <section class="view" id="view-focus">
+        <header class="view-head"><h1>Job Focus</h1><div class="actions"><button class="btn primary" data-save>💾 Save</button></div></header>
+        <div class="card">
+          <label class="block">What roles are you looking for? <span class="hint">(free text — the AI reads this and picks matching categories on each job board)</span>
+            <textarea id="f_interest" rows="3" placeholder="e.g. Registered nurse — ICU or ER; also open to clinical educator roles"></textarea>
+          </label>
+
+          <label class="block">📍 Location <span class="hint">(United States only — enter a city + state, or a ZIP)</span></label>
+          <div class="form-grid">
+            <label>City<input id="f_city" type="text" placeholder="Chicago" /></label>
+            <label>State<input id="f_state" type="text" placeholder="IL" /></label>
+            <label>ZIP code<input id="f_zip" type="text" placeholder="60601" /></label>
+            <label>Search radius (miles)<input id="f_radius" type="number" min="0" max="200" /></label>
+          </div>
+
+          <div class="form-grid">
+            <label class="check"><input id="f_remote" type="checkbox" /> Also include US-wide remote roles</label>
+            <label>Minimum salary <span class="hint">(USD/yr, 0 = any)</span><input id="f_minsalary" type="number" min="0" step="5000" /></label>
+          </div>
+
+          <label class="block">Exclude keywords <span class="hint">(skip jobs containing any of these)</span>
+            <input id="f_exclude" type="text" placeholder="travel, night shift, contract" />
+          </label>
+
+          <div class="form-grid">
+            <label>Max results per source<input id="f_max" type="number" min="1" max="50" /></label>
+            <label>Min relevance to tailor <span class="hint">(stage 2 AI filter, 0 = off)</span><input id="f_minprescreen" type="number" min="0" max="100" /></label>
+            <label>Min match score to keep <span class="hint">(stage 3, 0–100)</span><input id="f_minscore" type="number" min="0" max="100" /></label>
+          </div>
+
+          <label class="block">Job sources <span class="hint">(★ needs a free API key — add it in the AI &amp; Apply tab)</span></label>
+          <div id="sourceList" class="source-list"></div>
+
+          <details class="browser-search" id="browserSearchOpts">
+            <summary>🤖 AI Browser Search (vision) — options</summary>
+            <p class="hint" style="line-height:1.55">Enable <strong>AI Browser Search (vision)</strong> in the list above to drive a <em>real browser</em> to each board's normal search page and have your AI model read the listings straight off screenshots. It browses like a person instead of hitting scrape endpoints, so it isn't rate-limited or Cloudflare-blocked. Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). Connected accounts (LinkedIn / ZipRecruiter) are replayed here too.</p>
+            <label class="block">Boards to browse</label>
+            <div id="browserBoards" class="source-list">
+              <label><input type="checkbox" value="indeed" data-bb /> Indeed</label>
+              <label><input type="checkbox" value="linkedin" data-bb /> LinkedIn</label>
+              <label><input type="checkbox" value="ziprecruiter" data-bb /> ZipRecruiter</label>
+              <label><input type="checkbox" value="google" data-bb /> Google Jobs</label>
+            </div>
+            <div class="form-grid">
+              <label class="check"><input id="bb_headful" type="checkbox" /> Show the browser window while it searches</label>
+              <label>Screens per board <span class="hint">(more = more jobs, slower)</span><input id="bb_screens" type="number" min="1" max="6" /></label>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- AI & Apply -->
+      <section class="view" id="view-ai">
+        <header class="view-head"><h1>Settings</h1><div class="actions"><button class="btn primary" data-save>💾 Save</button></div></header>
+
+        <div class="card">
+          <div class="card-head"><h2>AI provider</h2></div>
+          <label class="block">Active provider
+            <select id="ai_active" class="select">
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="google">Google (Gemini)</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="local">Local model (OpenAI-compatible)</option>
+            </select>
+          </label>
+
+          <div class="provider-block" data-provider="anthropic">
+            <h3>Anthropic</h3>
+            <div class="form-grid">
+              <label>API key<input id="anthropic_key" type="password" placeholder="sk-ant-…" /></label>
+              <label>Model<input id="anthropic_model" type="text" list="models_anthropic" autocomplete="off" /><datalist id="models_anthropic"></datalist></label>
+              <label>Temperature<input id="anthropic_temp" type="number" step="0.1" min="0" max="2" /></label>
+              <label>Max tokens<input id="anthropic_max" type="number" /></label>
+            </div>
+            <button class="btn tiny" data-test="anthropic">Test connection</button>
+            <button class="btn tiny" data-models="anthropic">↻ Fetch models</button>
+            <span class="test-result" id="test_anthropic"></span>
+          </div>
+
+          <div class="provider-block" data-provider="google">
+            <h3>Google Gemini</h3>
+            <div class="form-grid">
+              <label>API key<input id="google_key" type="password" placeholder="AIza…" /></label>
+              <label>Model<input id="google_model" type="text" list="models_google" autocomplete="off" /><datalist id="models_google"></datalist></label>
+              <label>Temperature<input id="google_temp" type="number" step="0.1" min="0" max="2" /></label>
+              <label>Max tokens<input id="google_max" type="number" /></label>
+            </div>
+            <button class="btn tiny" data-test="google">Test connection</button>
+            <button class="btn tiny" data-models="google">↻ Fetch models</button>
+            <span class="test-result" id="test_google"></span>
+          </div>
+
+          <div class="provider-block" data-provider="deepseek">
+            <h3>DeepSeek</h3>
+            <div class="form-grid">
+              <label>API key<input id="deepseek_key" type="password" placeholder="sk-…" /></label>
+              <label>Model<input id="deepseek_model" type="text" list="models_deepseek" autocomplete="off" /><datalist id="models_deepseek"></datalist></label>
+              <label>Base URL<input id="deepseek_url" type="text" /></label>
+              <label>Temperature<input id="deepseek_temp" type="number" step="0.1" min="0" max="2" /></label>
+              <label>Max tokens<input id="deepseek_max" type="number" /></label>
+            </div>
+            <button class="btn tiny" data-test="deepseek">Test connection</button>
+            <button class="btn tiny" data-models="deepseek">↻ Fetch models</button>
+            <span class="test-result" id="test_deepseek"></span>
+          </div>
+
+          <div class="provider-block" data-provider="local">
+            <h3>Local model <span class="hint">(Ollama, LM Studio, vLLM, …)</span></h3>
+            <div class="form-grid">
+              <label>Base URL<input id="local_url" type="text" placeholder="http://localhost:11434/v1" /></label>
+              <label>Model<input id="local_model" type="text" placeholder="llama3.1" list="models_local" autocomplete="off" /><datalist id="models_local"></datalist></label>
+              <label>API key <span class="hint">(optional)</span><input id="local_key" type="password" /></label>
+              <label>Temperature<input id="local_temp" type="number" step="0.1" min="0" max="2" /></label>
+              <label>Max tokens<input id="local_max" type="number" /></label>
+            </div>
+            <button class="btn tiny" data-test="local">Test connection</button>
+            <button class="btn tiny" data-models="local">↻ Fetch models</button>
+            <span class="test-result" id="test_local"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Job source API keys <span class="hint">(optional — unlock US ZIP + radius search)</span></h2></div>
+          <p class="hint" style="margin:0 0 4px">The Muse works with no key. Adding these two free keys gives precise location/radius search and broader coverage.</p>
+          <h3>Adzuna <span class="hint">— US jobs, ZIP + radius + salary · <a href="https://developer.adzuna.com/" target="_blank" rel="noopener">get a free key ↗</a></span></h3>
+          <div class="form-grid">
+            <label>App ID<input id="adzuna_id" type="text" /></label>
+            <label>App Key<input id="adzuna_key" type="password" /></label>
+          </div>
+          <h3>USAJOBS <span class="hint">— US federal jobs · <a href="https://developer.usajobs.gov/apirequest/" target="_blank" rel="noopener">get a free key ↗</a></span></h3>
+          <div class="form-grid">
+            <label>API Key<input id="usajobs_key" type="password" /></label>
+            <label>Email <span class="hint">(required by USAJOBS as User-Agent)</span><input id="usajobs_email" type="text" placeholder="you@example.com" /></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Connected accounts <span class="hint">(optional — sign in for better / unblocked scraping)</span></h2></div>
+          <p class="hint" style="margin:0 0 12px; line-height:1.5">Connecting opens a fresh browser window at the board. Sign in — or just clear any “are you human?” check — and the app captures that session automatically. <strong>No password is stored.</strong> The captured cookies are replayed on scrapes, which signs you in (LinkedIn) and gets past Cloudflare blocks (ZipRecruiter, SimplyHired, …).</p>
+          <div id="accountList" class="account-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Automation &amp; apply</h2></div>
+          <label class="block">When an application is ready, the apply channel decides what happens:
+            <select id="ap_channel" class="select">
+              <option value="review">Review only — prepare materials, I'll act manually (safest)</option>
+              <option value="export">Export — save resume &amp; cover letter to a folder</option>
+              <option value="email">Email — send to the posting's apply address (needs SMTP)</option>
+            </select>
+          </label>
+          <div class="form-grid">
+            <label class="check"><input id="ap_auto" type="checkbox" /> Auto-mode (run pipeline on a timer)</label>
+            <label class="check"><input id="ap_autoapply" type="checkbox" /> Auto-apply ready jobs (uses channel above)</label>
+            <label>Run every (minutes)<input id="ap_interval" type="number" min="1" /></label>
+            <label>Max applies per cycle<input id="ap_max" type="number" min="1" /></label>
+          </div>
+          <label class="block">Export folder <span class="hint">(blank = data dir / applications)</span>
+            <input id="ap_exportdir" type="text" placeholder="C:\Users\you\Documents\applications" />
+          </label>
+
+          <details class="smtp">
+            <summary>Email (SMTP) settings — only needed for the Email channel</summary>
+            <div class="form-grid">
+              <label>SMTP host<input id="smtp_host" type="text" placeholder="smtp.gmail.com" /></label>
+              <label>Port<input id="smtp_port" type="number" placeholder="587" /></label>
+              <label>Username<input id="smtp_user" type="text" /></label>
+              <label>Password<input id="smtp_pass" type="password" /></label>
+              <label>From address<input id="smtp_from" type="text" placeholder="you@example.com" /></label>
+            </div>
+            <p class="warn-text">⚠ Auto-applying by email sends real messages. Keep "Auto-apply" off until you've reviewed a few exports and trust the output.</p>
+          </details>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Job detail modal -->
+  <div class="modal-overlay" id="modal" hidden>
+    <div class="modal">
+      <button class="modal-close" id="modalClose">✕</button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
