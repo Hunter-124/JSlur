@@ -2,26 +2,30 @@ package jobs
 
 import "strings"
 
+// statePairs lists every US state (plus DC) as {abbreviation, full name}. It is
+// the single source of truth for the US-location helpers and the geo gazetteer
+// (see geo.go), so abbreviations and full names stay in sync.
+var statePairs = [][2]string{
+	{"al", "alabama"}, {"ak", "alaska"}, {"az", "arizona"}, {"ar", "arkansas"},
+	{"ca", "california"}, {"co", "colorado"}, {"ct", "connecticut"}, {"de", "delaware"},
+	{"fl", "florida"}, {"ga", "georgia"}, {"hi", "hawaii"}, {"id", "idaho"},
+	{"il", "illinois"}, {"in", "indiana"}, {"ia", "iowa"}, {"ks", "kansas"},
+	{"ky", "kentucky"}, {"la", "louisiana"}, {"me", "maine"}, {"md", "maryland"},
+	{"ma", "massachusetts"}, {"mi", "michigan"}, {"mn", "minnesota"}, {"ms", "mississippi"},
+	{"mo", "missouri"}, {"mt", "montana"}, {"ne", "nebraska"}, {"nv", "nevada"},
+	{"nh", "new hampshire"}, {"nj", "new jersey"}, {"nm", "new mexico"}, {"ny", "new york"},
+	{"nc", "north carolina"}, {"nd", "north dakota"}, {"oh", "ohio"}, {"ok", "oklahoma"},
+	{"or", "oregon"}, {"pa", "pennsylvania"}, {"ri", "rhode island"}, {"sc", "south carolina"},
+	{"sd", "south dakota"}, {"tn", "tennessee"}, {"tx", "texas"}, {"ut", "utah"},
+	{"vt", "vermont"}, {"va", "virginia"}, {"wa", "washington"}, {"wv", "west virginia"},
+	{"wi", "wisconsin"}, {"wy", "wyoming"}, {"dc", "district of columbia"},
+}
+
 // usStates maps lowercase state abbreviations and full names so a location
 // string can be recognised as US.
 var usStates = func() map[string]bool {
-	pairs := [][2]string{
-		{"al", "alabama"}, {"ak", "alaska"}, {"az", "arizona"}, {"ar", "arkansas"},
-		{"ca", "california"}, {"co", "colorado"}, {"ct", "connecticut"}, {"de", "delaware"},
-		{"fl", "florida"}, {"ga", "georgia"}, {"hi", "hawaii"}, {"id", "idaho"},
-		{"il", "illinois"}, {"in", "indiana"}, {"ia", "iowa"}, {"ks", "kansas"},
-		{"ky", "kentucky"}, {"la", "louisiana"}, {"me", "maine"}, {"md", "maryland"},
-		{"ma", "massachusetts"}, {"mi", "michigan"}, {"mn", "minnesota"}, {"ms", "mississippi"},
-		{"mo", "missouri"}, {"mt", "montana"}, {"ne", "nebraska"}, {"nv", "nevada"},
-		{"nh", "new hampshire"}, {"nj", "new jersey"}, {"nm", "new mexico"}, {"ny", "new york"},
-		{"nc", "north carolina"}, {"nd", "north dakota"}, {"oh", "ohio"}, {"ok", "oklahoma"},
-		{"or", "oregon"}, {"pa", "pennsylvania"}, {"ri", "rhode island"}, {"sc", "south carolina"},
-		{"sd", "south dakota"}, {"tn", "tennessee"}, {"tx", "texas"}, {"ut", "utah"},
-		{"vt", "vermont"}, {"va", "virginia"}, {"wa", "washington"}, {"wv", "west virginia"},
-		{"wi", "wisconsin"}, {"wy", "wyoming"}, {"dc", "district of columbia"},
-	}
 	m := map[string]bool{}
-	for _, p := range pairs {
+	for _, p := range statePairs {
 		m[p[0]] = true
 		m[p[1]] = true
 	}

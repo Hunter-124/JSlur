@@ -1,0 +1,10 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "autoapply",
+  "outputfilename": "autoapply",
+  "frontend:dir": "./web",
+  "wailsjsdir": "./frontend",
+  "author": {
+    "name": "AutoApply"
+  }
+}

@@ -448,6 +448,17 @@ func (e *Engine) Skip(jobID string) error {
 	return nil
 }
 
+// ClearJobs removes every discovered job and its application from the store.
+func (e *Engine) ClearJobs() error {
+	n, err := e.db.Clear()
+	if err != nil {
+		return err
+	}
+	e.logf("info", "cleared %d job listing(s)", n)
+	e.refresh()
+	return nil
+}
+
 // ApplicationEdit carries user edits to a prepared application.
 type ApplicationEdit struct {
 	Status      string `json:"status"`

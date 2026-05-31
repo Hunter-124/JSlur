@@ -219,6 +219,17 @@ func (s *Store) Records() []Record {
 	return out
 }
 
+// Clear removes every stored job and application, returning the number of jobs
+// deleted. Used by the "Clear listings" action in the GUI.
+func (s *Store) Clear() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.data.Jobs)
+	s.data.Jobs = map[string]Job{}
+	s.data.Applications = map[string]Application{}
+	return n, s.save()
+}
+
 // Stats summarises the store for the dashboard.
 type Stats struct {
 	TotalJobs int            `json:"totalJobs"`

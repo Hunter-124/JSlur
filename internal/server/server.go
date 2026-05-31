@@ -46,6 +46,7 @@ func New(cfg *config.Store, db *store.Store, eng *engine.Engine, static fs.FS) h
 	mux.HandleFunc("POST /api/resume/parse", s.postParseResume)
 
 	mux.HandleFunc("GET /api/jobs", s.getJobs)
+	mux.HandleFunc("DELETE /api/jobs", s.deleteJobs)
 	mux.HandleFunc("POST /api/search", s.postSearch)
 	mux.HandleFunc("POST /api/filter", s.postFilter)
 	mux.HandleFunc("POST /api/tailor", s.postTailor)
@@ -246,6 +247,14 @@ func (s *Server) testAI(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.db.Records())
+}
+
+func (s *Server) deleteJobs(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.ClearJobs(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) postSearch(w http.ResponseWriter, r *http.Request) {

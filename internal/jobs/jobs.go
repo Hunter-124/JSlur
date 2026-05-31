@@ -151,8 +151,8 @@ func normKey(company, title string) string {
 	return strings.ToLower(strings.TrimSpace(company)) + "|" + strings.ToLower(strings.TrimSpace(title))
 }
 
-// accept applies the post-fetch filters: exclude keywords, US-or-remote
-// location, and minimum salary.
+// accept applies the post-fetch filters: exclude keywords, location (remote when
+// allowed, otherwise within the search radius), and minimum salary.
 func accept(j store.Job, focus config.JobFocus) bool {
 	hay := strings.ToLower(j.Title + " " + j.Description + " " + strings.Join(j.Tags, " "))
 	for _, ex := range focus.ExcludeKeywords {
@@ -162,10 +162,14 @@ func accept(j store.Job, focus config.JobFocus) bool {
 	}
 
 	if j.Remote {
+		// Remote roles have no location to measure against, so they're kept only
+		// when the user opted into remote.
 		if !focus.IncludeRemote {
 			return false
 		}
-	} else if !isUSLocation(j.Location) {
+	} else if !withinSearchArea(j.Location, focus) {
+		// Non-remote jobs must fall inside the configured radius (this is the
+		// backstop for sources that ignore location server-side).
 		return false
 	}
 

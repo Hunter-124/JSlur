@@ -109,3 +109,38 @@ func TestResolveOfficial_AIPickerRejectsAggregator(t *testing.T) {
 		t.Errorf("expected empty ApplyURL (AI returned an aggregator), got %q", res.ApplyURL)
 	}
 }
+
+// TestResolveOfficial_FallsBackToCompanySite: when no specific apply page is
+// found but the company's own site is known, the user should still get a link
+// to it rather than a dead end.
+func TestResolveOfficial_FallsBackToCompanySite(t *testing.T) {
+	job := store.Job{
+		Source:     "indeed",
+		URL:        "https://www.indeed.com/viewjob?jk=1",
+		Company:    "Acme",
+		CompanyURL: "https://acme.com",
+	}
+	res := ResolveOfficial(context.Background(), job, nil, false)
+	if res.ApplyURL != "https://acme.com" {
+		t.Fatalf("ApplyURL = %q, want the company site", res.ApplyURL)
+	}
+	if res.CompanyURL != "https://acme.com" {
+		t.Errorf("CompanyURL = %q", res.CompanyURL)
+	}
+}
+
+func TestCompanySlug(t *testing.T) {
+	cases := map[string]string{
+		"Acme Inc.":            "acme",
+		"Foo Bar LLC":          "foobar",
+		"AT&T":                 "att",
+		"General Motors":       "generalmotors",
+		"Stripe":               "stripe",
+		"Initech Technologies": "initech",
+	}
+	for in, want := range cases {
+		if got := companySlug(in); got != want {
+			t.Errorf("companySlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

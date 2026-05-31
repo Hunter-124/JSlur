@@ -130,10 +130,20 @@ func ResolveOfficial(ctx context.Context, job store.Job, pick OfficialURLPicker,
 		}
 	}
 
-	// 3. Deep: crawl the company's own site for a careers/apply link.
-	if deep && companyURL != "" {
-		if u := crawlCareers(ctx, companyURL, job); u != "" {
-			return Official{ApplyURL: u, CompanyURL: companyURL, ATS: detectATS(u), Note: "found on company site"}
+	// 3. Deep: find the company's own site (deriving it from the name when the
+	//    listing didn't provide one), then look for a careers/apply link on it —
+	//    first by crawling the homepage, then by trying conventional careers paths.
+	if deep {
+		if companyURL == "" {
+			companyURL = guessCompanySite(ctx, job.Company)
+		}
+		if companyURL != "" {
+			if u := crawlCareers(ctx, companyURL, job); u != "" {
+				return Official{ApplyURL: u, CompanyURL: companyURL, ATS: detectATS(u), Note: careersNote(u)}
+			}
+			if u := probeCareers(ctx, companyURL); u != "" {
+				return Official{ApplyURL: u, CompanyURL: companyURL, ATS: detectATS(u), Note: careersNote(u)}
+			}
 		}
 	}
 
@@ -141,7 +151,114 @@ func ResolveOfficial(ctx context.Context, job store.Job, pick OfficialURLPicker,
 	if best != "" {
 		return Official{ApplyURL: best, CompanyURL: firstNonEmpty(companyURL, rootOf(best)), ATS: detectATS(best), Note: "best available link"}
 	}
-	return Official{CompanyURL: companyURL, Note: "no official URL found"}
+
+	// 5. Last resort: if we at least know the company's website, point there so
+	//    the user can reach its Careers section themselves — better than nothing.
+	if companyURL != "" {
+		return Official{ApplyURL: companyURL, CompanyURL: companyURL, Note: "company website — couldn't find a specific apply page; check the Careers section"}
+	}
+	return Official{Note: "no official URL found"}
+}
+
+// careersNote describes how a resolved company URL should be labelled.
+func careersNote(u string) string {
+	if ats := detectATS(u); ats != "" {
+		return "company application (" + ats + ")"
+	}
+	return "found on company site"
+}
+
+// companySuffixes are legal/marketing tokens dropped from a company name before
+// guessing its domain.
+var companySuffixes = map[string]bool{
+	"inc": true, "llc": true, "ltd": true, "corp": true, "co": true, "company": true,
+	"corporation": true, "incorporated": true, "group": true, "holdings": true,
+	"plc": true, "gmbh": true, "technologies": true, "technology": true, "labs": true,
+	"systems": true, "solutions": true, "services": true, "and": true,
+}
+
+// companySlug reduces a company name to a lowercase, domain-friendly token:
+// drops legal suffixes and anything that isn't a letter or digit.
+func companySlug(company string) string {
+	var kept []string
+	for _, f := range strings.Fields(strings.ToLower(company)) {
+		f = strings.Trim(f, ".,&")
+		if f == "" || companySuffixes[f] {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	var b strings.Builder
+	for _, r := range strings.Join(kept, "") {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// guessCompanySite finds the company's own website by trying likely domains
+// built from its name and returning the first that resolves to a real site
+// (not a parked/registrar page). Best-effort and network-bound, so it runs only
+// on the deep (manual) resolution path and respects the context deadline.
+func guessCompanySite(ctx context.Context, company string) string {
+	slug := companySlug(company)
+	if len(slug) < 2 {
+		return ""
+	}
+	for _, host := range []string{slug + ".com", slug + ".io", slug + ".co", slug + ".ai", "get" + slug + ".com"} {
+		if ctx.Err() != nil {
+			return ""
+		}
+		u := "https://" + host
+		if isAggregator(u) {
+			continue
+		}
+		doc, err := getDoc(ctx, u, nil)
+		if err != nil {
+			continue
+		}
+		// Guard against parked domains: a genuine company homepage almost always
+		// names itself or links its careers/about/contact pages.
+		low := strings.ToLower(doc)
+		if strings.Contains(low, slug) || strings.Contains(low, "careers") ||
+			strings.Contains(low, "about") || strings.Contains(low, "contact") {
+			return u
+		}
+	}
+	return ""
+}
+
+// careerPaths are conventional locations of a company's careers/jobs page,
+// tried when crawling the homepage didn't surface one.
+var careerPaths = []string{
+	"/careers", "/careers/jobs", "/jobs", "/join-us", "/join",
+	"/company/careers", "/about/careers", "/work-with-us", "/en/careers",
+}
+
+// probeCareers tries conventional careers/jobs paths on the company root and
+// returns the first that loads — preferring an ATS/apply link found on that
+// page, otherwise the careers page itself. Bounded by ctx; deep path only.
+func probeCareers(ctx context.Context, companyURL string) string {
+	root := rootOf(companyURL)
+	if root == "" {
+		return ""
+	}
+	for _, p := range careerPaths {
+		if ctx.Err() != nil {
+			return ""
+		}
+		u := root + p
+		doc, err := getDoc(ctx, u, nil)
+		if err != nil {
+			continue
+		}
+		if apply := bestLink(u, doc, false); apply != "" && detectATS(apply) != "" {
+			return apply
+		}
+		return u
+	}
+	return ""
 }
 
 // collectCandidates gathers every plausible official URL for a job: its own URL

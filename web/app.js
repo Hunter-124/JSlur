@@ -11,14 +11,30 @@ const joinList = (a) => (a || []).join(", ");
 const intNum = (v, d = 0) => { const n = parseInt(v, 10); return isNaN(n) ? d : n; };
 const fl = (v, d = 0) => { const n = parseFloat(v); return isNaN(n) ? d : n; };
 
+// Inline line-icon (references the SVG sprite in index.html) for use in
+// dynamically rendered markup. Keeps the whole UI emoji-free.
+const icon = (name, cls) => `<svg class="ic${cls ? " " + cls : ""}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+
+// Deterministic initials + hue for a company "logo" chip in the job list.
+function avatarFor(name) {
+  const s = (name || "").trim();
+  const initials = s
+    ? s.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase()
+    : "—";
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return { initials: initials || "—", hue: h };
+}
+
+// api() forwards to the Go backend bound by Wails (App.Request), which runs the
+// request against the in-process handler — same routes as before, no network.
 async function api(method, path, body) {
-  const opts = { method, headers: {} };
-  if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
-  const res = await fetch(path, opts);
-  const text = await res.text();
+  const payload = body !== undefined ? JSON.stringify(body) : "";
+  const res = await window.go.main.App.Request(method, path, payload);
+  const text = (res && res.body) || "";
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  if (!res || res.status >= 400) throw new Error((data && data.error) || ("request failed (" + (res ? res.status : "?") + ")"));
   return data;
 }
 
@@ -147,7 +163,7 @@ function readProvider(id) {
 function renderSources() {
   const enabled = new Set((CFG.focus && CFG.focus.sources) || []);
   $("sourceList").innerHTML = SOURCES.map(
-    (s) => `<label><input type="checkbox" value="${esc(s.id)}" ${enabled.has(s.id) ? "checked" : ""}/> ${esc(s.name)}${s.needsCredentials ? ' <span class="hint">★ needs key</span>' : ""}</label>`
+    (s) => `<label><input type="checkbox" value="${esc(s.id)}" ${enabled.has(s.id) ? "checked" : ""}/> <span>${esc(s.name)}</span>${s.needsCredentials ? ` <span class="hint">${icon("key", "ic-xs")} needs key</span>` : ""}</label>`
   ).join("");
 }
 
@@ -229,14 +245,14 @@ async function loadSources() {
 // ---------- AI test ----------
 async function testProvider(provider) {
   const el = $("test_" + provider);
-  el.textContent = "testing…"; el.className = "test-result";
+  el.textContent = "Testing…"; el.className = "test-result";
   collectConfig();
   try {
     await api("PUT", "/api/config", CFG);
     const r = await api("POST", "/api/ai/test", { provider });
-    if (r.ok) { el.textContent = "✓ " + (r.name || "ok") + (r.sample ? ` — “${r.sample.slice(0, 40)}”` : ""); el.className = "test-result ok"; }
-    else { el.textContent = "✗ " + (r.error || "failed"); el.className = "test-result err"; }
-  } catch (e) { el.textContent = "✗ " + e.message; el.className = "test-result err"; }
+    if (r.ok) { el.innerHTML = icon("check") + "<span>" + esc((r.name || "ok") + (r.sample ? ` — “${r.sample.slice(0, 40)}”` : "")) + "</span>"; el.className = "test-result ok"; }
+    else { el.innerHTML = icon("x") + "<span>" + esc(r.error || "failed") + "</span>"; el.className = "test-result err"; }
+  } catch (e) { el.innerHTML = icon("x") + "<span>" + esc(e.message) + "</span>"; el.className = "test-result err"; }
 }
 
 // ---------- jobs ----------
@@ -266,20 +282,23 @@ function renderJobs() {
       : (app && app.prescreenScore
           ? `<div class="job-score ${scoreClass(app.prescreenScore)}">${app.prescreenScore}<small>fit</small></div>`
           : `<div class="job-score score-low">—</div>`);
-    const salary = r.job.salary ? `<span>· 💵 ${esc(r.job.salary)}</span>` : "";
-    const remote = r.job.remote ? `<span>· 🏠 remote</span>` : "";
+    const company = r.job.company || "—";
+    const ava = avatarFor(company);
+    const remote = r.job.remote ? `<span class="jm">${icon("wifi")} Remote</span>` : "";
+    const salary = r.job.salary ? `<span class="jm">${icon("dollar")} ${esc(r.job.salary)}</span>` : "";
     return `<div class="job-row" data-id="${esc(r.job.id)}">
+      <div class="job-ava" style="--h:${ava.hue}">${esc(ava.initials)}</div>
       <div class="job-main">
         <div class="job-title">${esc(r.job.title)}</div>
         <div class="job-meta">
-          <span>${esc(r.job.company || "—")}</span>
-          <span>· ${esc(r.job.location || "—")}</span>
+          <span class="jm">${esc(company)}</span>
+          <span class="jm">${icon("pin")} ${esc(r.job.location || "—")}</span>
           ${remote}${salary}
-          <span class="src">· ${esc(r.job.source)}</span>
+          <span class="jm src">${esc(r.job.source)}</span>
         </div>
       </div>
       ${score}
-      <span class="badge ${st}">${st}</span>
+      <span class="badge ${st}">${esc(st)}</span>
     </div>`;
   }).join("");
 
@@ -325,40 +344,40 @@ function renderModal() {
   const channelNote = { review: "mark applied (you submit manually)", export: "save files to your export folder", email: "email it to the posting" }[(CFG.apply && CFG.apply.channel) || "review"];
 
   let boxes = "";
-  if (official) boxes += `<div class="match-box"><b>🏢 Official application:</b> <a href="${esc(official)}" target="_blank" rel="noopener">${esc(official)}</a></div>`;
-  if (!hasDocs && (app.prescreenScore || app.prescreenReason)) boxes += `<div class="match-box"><b>🧪 Relevance ${app.prescreenScore || 0}/100.</b> ${esc(app.prescreenReason || "")}</div>`;
-  if (hasDocs) boxes += `<div class="match-box"><b>Match ${app.matchScore || 0}/100.</b> ${esc(app.matchReason || "")}</div>`;
-  if (app.error) boxes += `<div class="match-box err"><b>Error:</b> ${esc(app.error)}</div>`;
+  if (official) boxes += `<div class="match-box">${icon("building")}<div><b>Official application:</b> <a href="${esc(official)}" target="_blank" rel="noopener">${esc(official)}</a></div></div>`;
+  if (!hasDocs && (app.prescreenScore || app.prescreenReason)) boxes += `<div class="match-box">${icon("filter")}<div><b>Relevance ${app.prescreenScore || 0}/100.</b> ${esc(app.prescreenReason || "")}</div></div>`;
+  if (hasDocs) boxes += `<div class="match-box">${icon("target")}<div><b>Match ${app.matchScore || 0}/100.</b> ${esc(app.matchReason || "")}</div></div>`;
+  if (app.error) boxes += `<div class="match-box err">${icon("error")}<div><b>Error:</b> ${esc(app.error)}</div></div>`;
   if (app.strengths && app.strengths.length)
-    boxes += `<div class="insight ok"><b>✓ Strengths</b><ul>${app.strengths.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+    boxes += `<div class="insight ok"><span class="insight-head">${icon("check-circle")} Strengths</span><ul>${app.strengths.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if (app.gaps && app.gaps.length)
-    boxes += `<div class="insight warn"><b>⚠ Gaps to address</b><ul>${app.gaps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+    boxes += `<div class="insight warn"><span class="insight-head">${icon("warning")} Gaps to address</span><ul>${app.gaps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
 
-  const salary = r.job.salary ? ` · 💵 ${esc(r.job.salary)}` : "";
+  const salary = r.job.salary ? ` · ${esc(r.job.salary)}` : "";
   const docArea = modalDoc === "desc"
     ? `<div class="doc-content">${esc(r.job.description)}</div>`
     : `<textarea class="doc-edit" id="docEdit">${esc(modalDoc === "cover" ? modalEdit.coverLetter : modalEdit.resume)}</textarea>
-       <div class="doc-tools"><button class="btn tiny" id="m_copy">📋 Copy</button><span class="hint">edits are saved with the button below</span></div>`;
+       <div class="doc-tools"><button class="btn tiny" id="m_copy">${icon("copy")} Copy</button><span class="hint">edits are saved with the button below</span></div>`;
 
   const statusOpts = TRACK_STATUSES.map((s) => `<option value="${s}" ${modalEdit.status === s ? "selected" : ""}>${s}</option>`).join("");
 
   $("modalBody").innerHTML = `
     <h2>${esc(r.job.title)}</h2>
-    <div class="sub">${esc(r.job.company || "")} · ${esc(r.job.location || "")}${r.job.remote ? " · 🏠 remote" : ""}${salary} · via ${esc(r.job.source)} · <span class="badge ${st}">${st}</span></div>
+    <div class="sub">${esc(r.job.company || "")} · ${esc(r.job.location || "")}${r.job.remote ? " · Remote" : ""}${salary} · via ${esc(r.job.source)} <span class="badge ${st}">${esc(st)}</span></div>
 
     <div class="modal-actions">
-      <button class="btn" id="m_open">↗ Open posting</button>
-      <button class="btn primary" id="m_gen" ${gen ? "disabled" : ""}>${gen ? "⏳ Generating…" : (hasDocs ? "↻ Regenerate" : "✨ Generate application")}</button>
-      ${hasDocs ? `<button class="btn" id="m_apply">📨 Apply (${esc(channelNote)})</button>` : ""}
-      ${official ? `<button class="btn" id="m_official">🏢 Open official application</button>` : ""}
-      <button class="btn" id="m_findofficial">🔎 Find official apply page</button>
+      <button class="btn" id="m_open">${icon("external")} Open posting</button>
+      <button class="btn primary" id="m_gen" ${gen ? "disabled" : ""}>${gen ? icon("clock") + " Generating…" : (hasDocs ? icon("refresh") + " Regenerate" : icon("sparkles") + " Generate application")}</button>
+      ${hasDocs ? `<button class="btn" id="m_apply">${icon("send")} Apply (${esc(channelNote)})</button>` : ""}
+      ${official ? `<button class="btn" id="m_official">${icon("building")} Open official application</button>` : ""}
+      <button class="btn" id="m_findofficial">${icon("locate")} Find official apply page</button>
     </div>
 
     ${boxes}
 
     ${hasDocs ? `<div class="refine">
       <input type="text" id="refineInput" placeholder="Refine: e.g. ‘make it more concise’, ‘emphasize leadership’…" />
-      <button class="btn" id="m_refine">↻ Refine</button>
+      <button class="btn" id="m_refine">${icon("refresh")} Refine</button>
     </div>` : ""}
 
     <div class="doc-tabs">
@@ -371,7 +390,7 @@ function renderModal() {
     <div class="track">
       <label>Status <select id="trackStatus" class="select">${statusOpts}</select></label>
       <label class="grow">Notes <input type="text" id="trackNotes" value="${esc(modalEdit.notes)}" placeholder="e.g. phone screen on Friday" /></label>
-      <button class="btn primary" id="m_save">💾 Save</button>
+      <button class="btn primary" id="m_save">${icon("check")} Save</button>
     </div>
   `;
 
@@ -414,17 +433,17 @@ async function applyCurrent() {
 // then re-renders the modal so the new "official application" link shows.
 async function findOfficial() {
   const btn = $("m_findofficial");
-  if (btn) { btn.disabled = true; btn.textContent = "🔎 Searching…"; }
+  if (btn) { btn.disabled = true; btn.innerHTML = icon("locate") + " Searching…"; }
   toast("Finding the official application page…");
   try {
     const res = await api("POST", `/api/jobs/${modalId}/resolve-apply`);
     await loadJobs();
     refreshModalFromData();
-    if (res && res.ApplyURL) toast("Official application found", "ok");
-    else toast("No official application URL found for this job", "err");
+    if (res && res.ApplyURL) toast(res.Note ? `Apply link found — ${res.Note}` : "Apply link found", "ok");
+    else toast("No apply page or company site found — open the posting to apply", "err");
   } catch (e) {
     toast(e.message, "err");
-    if (btn) { btn.disabled = false; btn.textContent = "🔎 Find official apply page"; }
+    if (btn) { btn.disabled = false; btn.innerHTML = icon("locate") + " Find official apply page"; }
   }
 }
 
@@ -447,8 +466,12 @@ async function loadStatus() {
   const pill = $("enginePill");
   pill.classList.toggle("running", st.running && !st.busy);
   pill.classList.toggle("busy", st.busy);
-  $("enginePillText").textContent = st.busy ? "working…" : st.running ? "automation on" : "idle";
-  $("providerLine").textContent = st.providerError ? "⚠ " + st.providerError : (st.activeProvider || "no AI configured");
+  $("enginePillText").textContent = st.busy ? "Working…" : st.running ? "Automation on" : "Idle";
+  const pl = $("providerLine");
+  pl.classList.toggle("err", !!st.providerError);
+  pl.innerHTML = st.providerError
+    ? icon("warning") + "<span>" + esc(st.providerError) + "</span>"
+    : icon("cpu") + "<span>" + esc(st.activeProvider || "No AI configured") + "</span>";
   if ($("home_ai_hint")) $("home_ai_hint").hidden = !st.providerError && !!st.activeProvider;
 
   const s = st.stats || { byStatus: {} };
@@ -464,7 +487,7 @@ async function loadStatus() {
   $("pmMatched").textContent = by.matched || 0;
   $("pmReady").textContent = by.ready || 0;
 
-  $("btnToggleAuto").textContent = st.running ? "⏹ Stop automation" : "▶ Start automation";
+  $("btnToggleAuto").innerHTML = st.running ? icon("stop") + " Stop automation" : icon("play") + " Start automation";
   $("btnToggleAuto").classList.toggle("primary", !st.running);
   $("btnToggleAuto").classList.toggle("danger", st.running);
   $("setupHint").hidden = (s.totalJobs || 0) > 0;
@@ -495,15 +518,15 @@ async function loadLogs() {
 }
 
 // ---------- live events ----------
-function connectSSE() {
-  const es = new EventSource("/api/events");
-  window.__es = es; // exposed for debugging/automation
-  es.onmessage = (e) => {
-    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+// The engine pushes log/refresh events over the Wails event bus (the in-process
+// replacement for the old SSE stream).
+function connectEvents() {
+  if (!window.runtime || !window.runtime.EventsOn) return;
+  window.runtime.EventsOn("backend", (ev) => {
+    if (!ev) return;
     if (ev.type === "log") appendLog(ev);
     else if (ev.type === "refresh") { loadJobs(); loadStatus(); loadAccounts(); }
-  };
-  es.onerror = () => { /* EventSource auto-reconnects */ };
+  });
 }
 
 // ---------- engine controls ----------
@@ -511,21 +534,32 @@ async function doSearch() { try { await api("POST", "/api/search"); toast("Searc
 async function doFilter() { try { await api("POST", "/api/filter"); toast("Filtering jobs for relevance with AI…"); } catch (e) { toast(e.message, "err"); } }
 async function doTailor() { try { await api("POST", "/api/tailor"); toast("Tailoring matched jobs with AI…"); } catch (e) { toast(e.message, "err"); } }
 async function doRunOnce() { try { await api("POST", "/api/engine/run"); toast("Running the full pipeline…"); } catch (e) { toast(e.message, "err"); } }
+async function clearJobs() {
+  if (!RECORDS.length) { toast("No listings to clear.", ""); return; }
+  if (!confirm(`Clear all ${RECORDS.length} job listing${RECORDS.length === 1 ? "" : "s"}? This can't be undone.`)) return;
+  try {
+    await api("DELETE", "/api/jobs");
+    closeModal();
+    await loadJobs();
+    loadStatus();
+    toast("Listings cleared", "ok");
+  } catch (e) { toast(e.message, "err"); }
+}
 
 // ---------- provider models ----------
 async function fetchModels(provider) {
   const el = $("test_" + provider);
-  if (el) { el.textContent = "loading models…"; el.className = "test-result"; }
+  if (el) { el.textContent = "Loading models…"; el.className = "test-result"; }
   collectConfig();
   try {
     await api("PUT", "/api/config", CFG);
     const r = await api("GET", "/api/ai/models?provider=" + encodeURIComponent(provider));
-    if (!r.ok) { if (el) { el.textContent = "✗ " + (r.error || "could not list models"); el.className = "test-result err"; } return; }
+    if (!r.ok) { if (el) { el.innerHTML = icon("x") + "<span>" + esc(r.error || "could not list models") + "</span>"; el.className = "test-result err"; } return; }
     const dl = $("models_" + provider);
     const models = r.models || [];
     if (dl) dl.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
-    if (el) { el.textContent = "✓ " + models.length + " models — open the Model field"; el.className = "test-result ok"; }
-  } catch (e) { if (el) { el.textContent = "✗ " + e.message; el.className = "test-result err"; } }
+    if (el) { el.innerHTML = icon("check") + "<span>" + esc(models.length + " models — open the Model field") + "</span>"; el.className = "test-result ok"; }
+  } catch (e) { if (el) { el.innerHTML = icon("x") + "<span>" + esc(e.message) + "</span>"; el.className = "test-result err"; } }
 }
 
 // ---------- connected accounts ----------
@@ -541,11 +575,11 @@ function renderAccounts() {
   el.innerHTML = ACCOUNTS.map((a) => {
     const when = a.capturedAt ? new Date(a.capturedAt).toLocaleString() : "";
     const status = a.connected
-      ? `<span class="ac-status on">✓ connected${when ? " · " + esc(when) : ""}</span>`
-      : `<span class="ac-status">not connected</span>`;
+      ? `<span class="ac-status on">${icon("check-circle")} Connected${when ? " · " + esc(when) : ""}</span>`
+      : `<span class="ac-status">Not connected</span>`;
     const btns = a.connected
-      ? `<button class="btn tiny" data-connect="${esc(a.id)}">Reconnect</button> <button class="btn tiny danger" data-disconnect="${esc(a.id)}">Disconnect</button>`
-      : `<button class="btn tiny" data-connect="${esc(a.id)}">Connect</button>`;
+      ? `<button class="btn tiny ghost" data-connect="${esc(a.id)}">${icon("refresh")} Reconnect</button> <button class="btn tiny danger" data-disconnect="${esc(a.id)}">${icon("unlink")} Disconnect</button>`
+      : `<button class="btn tiny" data-connect="${esc(a.id)}">${icon("link")} Connect</button>`;
     return `<div class="account-row"><div class="ac-main"><div class="ac-name">${esc(a.name)}</div><div class="ac-hint">${esc(a.hint || "")}</div></div>${status}${btns}</div>`;
   }).join("");
   el.querySelectorAll("[data-connect]").forEach((b) => b.addEventListener("click", () => connectAccount(b.dataset.connect)));
@@ -598,13 +632,19 @@ function renderHomeParsed() {
   }
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => { const s = String(fr.result); resolve(s.slice(s.indexOf(",") + 1)); };
+    fr.onerror = () => reject(new Error("could not read file"));
+    fr.readAsDataURL(file);
+  });
+}
+
 async function uploadResumeFile(file) {
-  const fd = new FormData();
-  fd.append("resume", file);
-  const res = await fetch("/api/resume/parse", { method: "POST", body: fd });
-  const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((data && data.error) || "résumé upload failed");
-  return data;
+  const b64 = await fileToBase64(file);
+  const json = await window.go.main.App.UploadResume(file.name, b64);
+  try { return JSON.parse(json); } catch { return null; }
 }
 
 async function homeFindJobs() {
@@ -650,6 +690,25 @@ async function homeFindJobs() {
 
 // ---------- wire up ----------
 function init() {
+  // Native frameless window (Wails): reveal the custom titlebar and wire its
+  // controls to the Wails runtime. Dragging the strip is handled by the
+  // `--wails-draggable: drag` CSS on #tbDrag. In a plain browser window.runtime
+  // is absent, so the titlebar stays hidden.
+  if (window.runtime && window.runtime.WindowMinimise) {
+    document.body.classList.add("native");
+    const rt = window.runtime;
+    $("winMin").addEventListener("click", () => rt.WindowMinimise());
+    $("winMax").addEventListener("click", () => rt.WindowToggleMaximise());
+    $("winClose").addEventListener("click", () => rt.Quit());
+    $("tbDrag").addEventListener("dblclick", () => rt.WindowToggleMaximise());
+    // Windows 10 doesn't round window corners, so we clip them ourselves
+    // (App.RoundWindow) and square them off while maximized / fullscreen.
+    const round = () => { try { window.go.main.App.RoundWindow(); } catch {} };
+    const syncMax = () => { if (rt.WindowIsMaximised) rt.WindowIsMaximised().then((m) => document.body.classList.toggle("maximized", !!m)).catch(() => {}); };
+    window.addEventListener("resize", () => { syncMax(); round(); });
+    syncMax(); round(); setTimeout(round, 200);
+  }
+
   document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   document.querySelectorAll("[data-goto]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); switchView(a.dataset.goto); }));
   document.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", saveConfig));
@@ -660,6 +719,7 @@ function init() {
   $("jobFilter").addEventListener("change", renderJobs);
   $("btnSearch").addEventListener("click", doSearch);
   $("btnSearch2").addEventListener("click", doSearch);
+  $("btnClearJobs").addEventListener("click", clearJobs);
   $("btnFilter").addEventListener("click", doFilter);
   $("btnTailor").addEventListener("click", doTailor);
   $("btnRunOnce").addEventListener("click", doRunOnce);
@@ -681,7 +741,7 @@ function init() {
   loadJobs();
   loadStatus();
   loadLogs();
-  connectSSE();
+  connectEvents();
   setInterval(loadStatus, 5000);
 }
 
