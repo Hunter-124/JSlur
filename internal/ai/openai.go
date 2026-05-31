@@ -54,6 +54,14 @@ func (o *openAICompat) send(ctx context.Context, req Request, userContent any) (
 		"temperature": pickTemp(o.cfg.Temperature, req.Temperature),
 		"stream":      false,
 	}
+	// A "thinking" model emits hidden reasoning that still counts against
+	// max_tokens; left unbounded it can swallow the entire budget and leave the
+	// actual answer empty. When the user sets a reasoning effort we forward it so
+	// the server can cap or disable that phase. Only sent when set, so servers
+	// that don't understand the field (Ollama, llama.cpp, …) are unaffected.
+	if eff := strings.TrimSpace(o.cfg.ReasoningEffort); eff != "" {
+		body["reasoning_effort"] = eff
+	}
 	headers := map[string]string{}
 	if o.cfg.APIKey != "" {
 		headers["Authorization"] = "Bearer " + o.cfg.APIKey
@@ -64,7 +72,11 @@ func (o *openAICompat) send(ctx context.Context, req Request, userContent any) (
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
+				// reasoning_content is where thinking models (and LM Studio) park the
+				// chain-of-thought, separate from the answer in content.
+				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
@@ -79,7 +91,49 @@ func (o *openAICompat) send(ctx context.Context, req Request, userContent any) (
 	if len(out.Choices) == 0 {
 		return "", fmt.Errorf("%s: empty response", strings.ToLower(o.name))
 	}
-	return out.Choices[0].Message.Content, nil
+
+	choice := out.Choices[0]
+	// Some models inline reasoning as <think>…</think> in the content itself
+	// rather than the separate field; drop it so callers get only the answer.
+	if content := stripThink(choice.Message.Content); content != "" {
+		return content, nil
+	}
+
+	// Empty answer. With a reasoning model this almost always means the hidden
+	// thinking used up the whole token budget before any answer was produced.
+	// Turn that into an actionable error instead of a silent empty string.
+	if choice.FinishReason == "length" {
+		fix := "increase Max tokens"
+		if strings.TrimSpace(o.cfg.ReasoningEffort) == "" {
+			fix = `set Reasoning effort to "none", or raise Max tokens,`
+		}
+		return "", fmt.Errorf("%s: the model spent its entire token budget on hidden reasoning and returned no answer — %s in Settings", strings.ToLower(o.name), fix)
+	}
+	if strings.TrimSpace(choice.Message.ReasoningContent) != "" {
+		return "", fmt.Errorf(`%s: the model returned only hidden reasoning and no answer — set Reasoning effort to "none" in Settings`, strings.ToLower(o.name))
+	}
+	return "", fmt.Errorf("%s: empty response", strings.ToLower(o.name))
+}
+
+// stripThink removes any <think>…</think> reasoning blocks a model inlines into
+// its content and trims the remainder. An unclosed (truncated) block drops
+// everything from the opening tag on. Content without such tags is returned
+// trimmed and unchanged.
+func stripThink(s string) string {
+	for {
+		open := strings.Index(s, "<think>")
+		if open < 0 {
+			break
+		}
+		rest := s[open+len("<think>"):]
+		end := strings.Index(rest, "</think>")
+		if end < 0 {
+			s = s[:open]
+			break
+		}
+		s = s[:open] + rest[end+len("</think>"):]
+	}
+	return strings.TrimSpace(s)
 }
 
 func (o *openAICompat) ListModels(ctx context.Context) ([]string, error) {

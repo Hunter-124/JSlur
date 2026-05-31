@@ -70,6 +70,12 @@ func detectATS(rawurl string) string {
 	return ""
 }
 
+// IsAggregatorURL reports whether a URL points at a job board, social site or
+// link shortener — i.e. never a company's own application destination. Exposed
+// so callers like the engine's browser+vision URL fallback can vet the links it
+// scrapes off a search-results page before handing them to the model.
+func IsAggregatorURL(rawurl string) bool { return isAggregator(rawurl) }
+
 // isAggregator reports whether a URL points at a job board / social / shortener.
 func isAggregator(rawurl string) bool {
 	h := strings.ToLower(hostOf(rawurl))

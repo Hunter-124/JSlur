@@ -334,18 +334,26 @@
 
           <details class="reveal browser-search" id="browserSearchOpts">
             <summary><svg class="ic"><use href="#i-scan"/></svg> AI Browser Search (vision) — options</summary>
-            <p class="hint" style="line-height:1.6">Enable <strong>AI Browser Search (vision)</strong> in the list above to drive a <em>real browser</em> to each board's normal search page and have your AI model read the listings straight off screenshots. It browses like a person instead of hitting scrape endpoints, so it isn't rate-limited or Cloudflare-blocked. Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). Connected accounts (LinkedIn / ZipRecruiter) are replayed here too.</p>
+            <p class="hint" style="line-height:1.6">Enable <strong>AI Browser Search (vision)</strong> in the list above to drive a <em>real browser</em> to each board's normal search page and have your AI model read the listings straight off screenshots. It browses like a person instead of hitting scrape endpoints, so it isn't rate-limited or Cloudflare-blocked. Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). <strong>LinkedIn and ZipRecruiter hide search results behind sign-in</strong>, so they require a connected session — set them up under <em>Connected accounts</em> below; they're skipped until you do. Indeed and Google Jobs are public (no account needed).</p>
             <label class="block">Boards to browse</label>
             <div id="browserBoards" class="source-list">
               <label><input type="checkbox" value="indeed" data-bb /> <span>Indeed</span></label>
-              <label><input type="checkbox" value="linkedin" data-bb /> <span>LinkedIn</span></label>
-              <label><input type="checkbox" value="ziprecruiter" data-bb /> <span>ZipRecruiter</span></label>
+              <label><input type="checkbox" value="linkedin" data-bb /> <span>LinkedIn</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
+              <label><input type="checkbox" value="ziprecruiter" data-bb /> <span>ZipRecruiter</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
               <label><input type="checkbox" value="google" data-bb /> <span>Google Jobs</span></label>
             </div>
             <div class="form-grid">
               <label class="check"><input id="bb_headful" type="checkbox" /> <span>Show the browser window while it searches</span></label>
               <label>Screens per board <span class="hint">(more = more jobs, slower)</span><input id="bb_screens" type="number" min="1" max="6" /></label>
+              <label>Browser engine
+                <select id="bb_engine" class="select">
+                  <option value="chromedp">Built-in (no setup)</option>
+                  <option value="python">Python Playwright (stronger stealth)</option>
+                </select>
+              </label>
+              <label id="bb_python_row" hidden>Python path <span class="hint">(optional)</span><input id="bb_python" type="text" placeholder="python" /></label>
             </div>
+            <p class="hint" id="bb_python_hint" hidden style="margin:6px 0 0;line-height:1.6">The <strong>Python Playwright</strong> engine gets past tougher bot walls (e.g. Indeed's security check) but needs a local Python with: <code>pip install playwright pw-stealth-enhanced</code> then <code>playwright install chromium</code>. It falls back to the built-in browser if unavailable. Works best with <em>Show the browser window</em> on.</p>
           </details>
         </div>
       </section>
@@ -409,6 +417,15 @@
               <label>Base URL<input id="deepseek_url" type="text" /></label>
               <label>Temperature<input id="deepseek_temp" type="number" step="0.1" min="0" max="2" /></label>
               <label>Max tokens<input id="deepseek_max" type="number" /></label>
+              <label>Reasoning effort <span class="hint">(thinking models)</span>
+                <select id="deepseek_reasoning" class="select">
+                  <option value="">Default</option>
+                  <option value="none">None — fastest</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
             </div>
             <div class="provider-actions">
               <button class="btn tiny" data-test="deepseek"><svg class="ic"><use href="#i-check-circle"/></svg> Test connection</button>
@@ -425,7 +442,17 @@
               <label>API key <span class="hint">(optional)</span><input id="local_key" type="password" /></label>
               <label>Temperature<input id="local_temp" type="number" step="0.1" min="0" max="2" /></label>
               <label>Max tokens<input id="local_max" type="number" /></label>
+              <label>Reasoning effort <span class="hint">(thinking models)</span>
+                <select id="local_reasoning" class="select">
+                  <option value="">Default</option>
+                  <option value="none">None — fastest</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
             </div>
+            <p class="hint" style="margin:6px 0 0">Using a local <strong>reasoning/thinking</strong> model (it prints its thoughts before answering)? Set <strong>Reasoning effort: None</strong> — it's far faster and stops hidden reasoning from eating the token budget and returning a blank reply. Needed for vision browser search to be usable.</p>
             <div class="provider-actions">
               <button class="btn tiny" data-test="local"><svg class="ic"><use href="#i-check-circle"/></svg> Test connection</button>
               <button class="btn tiny ghost" data-models="local"><svg class="ic"><use href="#i-refresh"/></svg> Fetch models</button>

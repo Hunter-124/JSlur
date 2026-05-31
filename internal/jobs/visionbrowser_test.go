@@ -62,6 +62,46 @@ func TestVisionBoardSearchURL(t *testing.T) {
 	}
 }
 
+func TestVisionBoardAccountGating(t *testing.T) {
+	// LinkedIn and ZipRecruiter gate search behind sign-in -> require a connected
+	// account; Indeed and Google are public.
+	want := map[string]bool{"linkedin": true, "ziprecruiter": true, "indeed": false, "google": false}
+	for id, req := range want {
+		b, ok := visionBoards[id]
+		if !ok {
+			t.Fatalf("board %q missing", id)
+		}
+		if b.requiresAccount != req {
+			t.Errorf("board %q requiresAccount = %v, want %v", id, b.requiresAccount, req)
+		}
+		if req && b.account == "" {
+			t.Errorf("board %q requires an account but names no account id", id)
+		}
+	}
+}
+
+func TestLooksLikeWall(t *testing.T) {
+	// Cloudflare / captcha interstitials — matched anywhere in title or text.
+	if r := looksLikeWall("Just a moment...", "Enable JavaScript and cookies to continue"); r == "" {
+		t.Error("expected a Cloudflare bot check to be detected from the title")
+	}
+	if r := looksLikeWall("Indeed", "Please verify you are a human to continue"); r == "" {
+		t.Error("expected a human-verification check to be detected from the body text")
+	}
+	// Sign-in walls are trusted only from the title (body links would false-match).
+	if r := looksLikeWall("Sign Up | LinkedIn", "join linkedin to see jobs"); r == "" {
+		t.Error("expected a LinkedIn sign-in wall from the title")
+	}
+	// A normal results page with a "Sign in" link in the body is NOT a wall.
+	if r := looksLikeWall("mechanical engineer jobs in Wilmington, NC | Indeed.com",
+		"Sign in to save jobs. 25 jobs found. Mechanical Engineer at Acme..."); r != "" {
+		t.Errorf("normal results page flagged as %q", r)
+	}
+	if r := looksLikeWall("software jobs - Google Search", "About 1,000,000 results"); r != "" {
+		t.Errorf("normal search page flagged as %q", r)
+	}
+}
+
 func TestReadListingsAttachesURLsFromLinks(t *testing.T) {
 	// The model returns titles/companies; it picks the matching url from the link
 	// list we provide. Verify the conversion to store.Job, including url fallback.

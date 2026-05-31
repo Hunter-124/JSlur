@@ -84,10 +84,12 @@ func (e *Engine) Search(ctx context.Context) (int, error) {
 		len(focus.Sources), where, orPlaceholder(focus.Interest))
 
 	q := jobs.Query{
-		Focus:  focus,
-		Creds:  cfg.Sources,
-		Select: e.categorySelector(provider, focus.Interest),
-		Vision: e.visionFunc(provider),
+		Focus:             focus,
+		Creds:             cfg.Sources,
+		Select:            e.categorySelector(provider, focus.Interest),
+		Vision:            e.visionFunc(provider),
+		Log:               func(level, msg string) { e.logf(level, "%s", msg) },
+		BrowserProfileDir: e.visionProfileDir(),
 	}
 	found, results := e.agg.Search(ctx, q)
 	for _, r := range results {
@@ -325,6 +327,24 @@ func (e *Engine) ResolveApply(ctx context.Context, jobID string) (jobs.Official,
 	}
 	e.logf("info", "resolving official application URL for %s @ %s", job.Title, job.Company)
 	res := e.resolveOfficial(ctx, job, provider, true)
+
+	// Fallback: when link-mining + a site crawl couldn't find a real apply page,
+	// drive a browser + vision model to search the web for the company's careers
+	// page. On-demand only — it's slow and opens a browser session.
+	if needsVisionFallback(res) {
+		if provider == nil {
+			e.logf("info", "no apply URL from the listing; set a vision-capable AI provider to enable the browser+vision search fallback")
+		} else {
+			e.logf("info", "couldn't resolve an apply URL the usual way — falling back to a browser + vision search for %s's careers page", orCompanyName(job.Company))
+			if vres, ok := e.visionFindApplyURL(ctx, job, provider); ok {
+				if vres.ApplyURL != "" || vres.CompanyURL != "" {
+					_, _ = e.db.SetJobApplyInfo(job.ID, vres.ApplyURL, vres.CompanyURL)
+				}
+				res = vres
+			}
+		}
+	}
+
 	if res.ApplyURL != "" {
 		e.logf("success", "official application for %s @ %s → %s (%s)", job.Title, job.Company, res.ApplyURL, res.Note)
 	} else {
@@ -332,6 +352,14 @@ func (e *Engine) ResolveApply(ctx context.Context, jobID string) (jobs.Official,
 	}
 	e.refresh()
 	return res, nil
+}
+
+// orCompanyName returns the company name, or a placeholder when it's blank.
+func orCompanyName(company string) string {
+	if c := strings.TrimSpace(company); c != "" {
+		return c
+	}
+	return "the company"
 }
 
 // ConnectAccount opens a browser so the user can sign in to a board, then

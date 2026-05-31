@@ -147,6 +147,7 @@ function fillProvider(id, p) {
   if ($(id + "_url")) $(id + "_url").value = p.baseUrl || "";
   if ($(id + "_temp")) $(id + "_temp").value = p.temperature != null ? p.temperature : 0.7;
   if ($(id + "_max")) $(id + "_max").value = p.maxTokens || 4096;
+  if ($(id + "_reasoning")) $(id + "_reasoning").value = p.reasoningEffort || "";
 }
 
 function readProvider(id) {
@@ -157,6 +158,7 @@ function readProvider(id) {
     maxTokens: intNum($(id + "_max") ? $(id + "_max").value : 4096, 4096),
   };
   if ($(id + "_url")) p.baseUrl = $(id + "_url").value.trim();
+  if ($(id + "_reasoning")) p.reasoningEffort = $(id + "_reasoning").value;
   return p;
 }
 
@@ -173,6 +175,16 @@ function renderBrowserSearch() {
   document.querySelectorAll("#browserBoards input[data-bb]").forEach((i) => { i.checked = boards.has(i.value); });
   if ($("bb_headful")) $("bb_headful").checked = !!b.headful;
   if ($("bb_screens")) $("bb_screens").value = b.maxScreens || 3;
+  if ($("bb_engine")) $("bb_engine").value = b.engine || "chromedp";
+  if ($("bb_python")) $("bb_python").value = b.pythonPath || "";
+  updateBrowserEngineHint();
+}
+
+// updateBrowserEngineHint shows the Python-engine setup note only when selected.
+function updateBrowserEngineHint() {
+  const py = $("bb_engine") && $("bb_engine").value === "python";
+  if ($("bb_python_row")) $("bb_python_row").hidden = !py;
+  if ($("bb_python_hint")) $("bb_python_hint").hidden = !py;
 }
 
 function updateProviderDim() {
@@ -218,6 +230,8 @@ function collectConfig() {
       boards: Array.from(document.querySelectorAll("#browserBoards input[data-bb]:checked")).map((i) => i.value),
       headful: $("bb_headful") ? $("bb_headful").checked : false,
       maxScreens: intNum($("bb_screens") ? $("bb_screens").value : 3, 3),
+      engine: $("bb_engine") ? $("bb_engine").value : "chromedp",
+      pythonPath: $("bb_python") ? $("bb_python").value.trim() : "",
     },
   });
   CFG.apply = {
@@ -716,6 +730,7 @@ function init() {
   document.querySelectorAll("[data-models]").forEach((b) => b.addEventListener("click", () => fetchModels(b.dataset.models)));
 
   $("ai_active").addEventListener("change", updateProviderDim);
+  if ($("bb_engine")) $("bb_engine").addEventListener("change", updateBrowserEngineHint);
   $("jobFilter").addEventListener("change", renderJobs);
   $("btnSearch").addEventListener("click", doSearch);
   $("btnSearch2").addEventListener("click", doSearch);

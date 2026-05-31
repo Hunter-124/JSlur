@@ -326,10 +326,13 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 }
 
 // postResolveApply resolves the company's own application URL for a job
-// (synchronously, including a site crawl) and returns it. The resolved URL is
-// also persisted on the job, so the client can simply re-read it.
+// (synchronously, including a site crawl and — as a last resort — a browser +
+// vision web search) and returns it. The resolved URL is also persisted on the
+// job, so the client can simply re-read it.
 func (s *Server) postResolveApply(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// Generous budget: the browser+vision fallback launches a real browser and
+	// makes a vision call, which is far slower than the HTTP-only crawl.
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 	res, err := s.engine.ResolveApply(ctx, r.PathValue("id"))
 	if err != nil {

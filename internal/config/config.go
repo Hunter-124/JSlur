@@ -131,6 +131,13 @@ type ProviderConfig struct {
 	BaseURL     string  `json:"baseUrl"`
 	Temperature float64 `json:"temperature"`
 	MaxTokens   int     `json:"maxTokens"`
+	// ReasoningEffort, when set ("none", "low", "medium" or "high"), is passed to
+	// OpenAI-compatible servers (LM Studio, vLLM, DeepSeek, …) to control how much
+	// a "thinking" model reasons before answering. Hidden reasoning still counts
+	// against MaxTokens, so a chatty reasoning model can burn the whole budget and
+	// return an empty answer; "none" disables it and is dramatically faster. Empty
+	// omits the field entirely (and is ignored by Anthropic and Google).
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // SourcesConfig holds per-board API credentials. Sources without credentials
@@ -161,6 +168,14 @@ type BrowserSearchConfig struct {
 	// MaxScreens caps the screenshots captured per board search (default 3). More
 	// screens read more of the page (more jobs) but are slower and cost more.
 	MaxScreens int `json:"maxScreens"`
+	// Engine selects the browser backend: "" / "chromedp" uses the built-in
+	// browser; "python" uses a Playwright stealth sidecar (pw-stealth-enhanced)
+	// that gets past tougher bot walls like Indeed's, but needs a local Python with
+	// `pip install playwright pw-stealth-enhanced` and `playwright install chromium`.
+	Engine string `json:"engine,omitempty"`
+	// PythonPath overrides the Python executable used for the stealth sidecar.
+	// Empty uses "python" from PATH.
+	PythonPath string `json:"pythonPath,omitempty"`
 }
 
 // Account is a captured browser session for a job board: its cookies (as a

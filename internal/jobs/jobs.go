@@ -9,6 +9,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -46,6 +47,22 @@ type Query struct {
 	Creds  config.SourcesConfig
 	Select CategorySelector
 	Vision VisionFunc
+	// Log, when set, receives human-readable progress notes from slow multi-step
+	// sources (currently AI Browser Search) so the user can watch what the browser
+	// and vision model are doing. level is "info" or "warn". Nil is fine — sources
+	// must tolerate it.
+	Log func(level, msg string)
+	// BrowserProfileDir, when set, is a persistent Chrome user-data dir the vision
+	// browser reuses across searches so a solved Cloudflare challenge survives.
+	// Empty uses a throwaway profile.
+	BrowserProfileDir string
+}
+
+// logf reports a progress note via the query's Log hook, if one is set.
+func (q Query) logf(level, format string, args ...any) {
+	if q.Log != nil {
+		q.Log(level, fmt.Sprintf(format, args...))
+	}
 }
 
 // Source is a single job board.

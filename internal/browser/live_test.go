@@ -29,3 +29,26 @@ func TestLiveCaptureLaunch(t *testing.T) {
 		t.Fatalf("expected a captured User-Agent (browser likely did not drive)")
 	}
 }
+
+// TestLiveZipConnectStaysOpen guards the ZipRecruiter "closes instantly" bug:
+// because its auth-cookie list is now empty (no reliable logged-in cookie), the
+// capture must wait for the user (until window-close / timeout) rather than
+// returning the moment Cloudflare/visitor cookies appear. We give it a short
+// timeout and assert it did NOT return early. Skipped unless AUTOAPPLY_LIVE=1.
+func TestLiveZipConnectStaysOpen(t *testing.T) {
+	if os.Getenv("AUTOAPPLY_LIVE") == "" {
+		t.Skip("set AUTOAPPLY_LIVE=1 to run the live ZipRecruiter connect test")
+	}
+	if browserPath() == "" {
+		t.Skip("no Edge/Chrome found")
+	}
+	const timeout = 6 * time.Second
+	start := time.Now()
+	// nil authCookies mirrors the ZipRecruiter AccountSpec (manual close).
+	res, _ := capture(context.Background(), "https://www.ziprecruiter.com/login", nil, timeout, true)
+	elapsed := time.Since(start)
+	t.Logf("elapsed=%s cookies=%d", elapsed, len(res.Cookies))
+	if elapsed < timeout-2*time.Second {
+		t.Fatalf("capture returned after %s — it closed early instead of waiting for sign-in (the instant-close bug)", elapsed)
+	}
+}

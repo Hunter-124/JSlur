@@ -17,11 +17,20 @@ type AccountSpec struct {
 // AccountSpecs lists the sources that benefit from a captured session. Indeed is
 // intentionally absent — its keyless mobile API already works and uses no web
 // cookies, so "connecting" it would add nothing.
+//
+// AuthCookies names cookies that appear ONLY after the user is done (a genuine
+// post-login cookie like LinkedIn's li_at, or a Cloudflare clearance that's set
+// after the challenge passes). When that list is empty the capture can't tell
+// when sign-in finished, so it keeps the window open and finishes when the user
+// closes it. Never list cookies a site sets on first page load (e.g. __cf_bm,
+// zva) — they'd make the window close instantly, before the user can sign in.
 var AccountSpecs = map[string]AccountSpec{
-	"linkedin":     {"https://www.linkedin.com/login", []string{"li_at"}, "Log in to LinkedIn, then come back."},
-	"ziprecruiter": {"https://www.ziprecruiter.com/jobs-search?search=jobs", []string{"cf_clearance", "__cf_bm", "zva"}, "Clear any 'are you human?' check (sign-in optional)."},
-	"simplyhired":  {"https://www.simplyhired.com/search?q=jobs", []string{"cf_clearance", "__cf_bm"}, "Clear any 'are you human?' check."},
-	"monster":      {"https://www.monster.com/jobs/search?q=jobs", []string{"cf_clearance", "__cf_bm"}, "Clear any 'are you human?' check."},
+	"linkedin": {"https://www.linkedin.com/login", []string{"li_at"}, "Log in to LinkedIn, then come back."},
+	// ZipRecruiter gates results behind sign-in but exposes no distinct logged-in
+	// cookie, so we wait for the user to close the window rather than auto-detect.
+	"ziprecruiter": {"https://www.ziprecruiter.com/login", nil, "Sign in to ZipRecruiter, then close the browser window."},
+	"simplyhired":  {"https://www.simplyhired.com/search?q=jobs", []string{"cf_clearance"}, "Clear any 'are you human?' check, then close the window."},
+	"monster":      {"https://www.monster.com/jobs/search?q=jobs", []string{"cf_clearance"}, "Clear any 'are you human?' check, then close the window."},
 	"craigslist":   {"https://www.craigslist.org/", []string{"cl_b", "cl_def_lang"}, "Open Craigslist once to establish a session."},
 }
 

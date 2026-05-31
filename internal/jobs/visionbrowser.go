@@ -34,6 +34,12 @@ type visionBoard struct {
 	// account is the connected-account id whose session (cookies + UA) to replay,
 	// or "" when the board needs none for a logged-out search.
 	account string
+	// requiresAccount marks boards that gate search/results behind a sign-in
+	// (LinkedIn, ZipRecruiter): without a connected session they show a sign-in
+	// wall and return nothing, so we skip them with a clear note rather than
+	// wasting a page load + vision call. Boards like Indeed/Google are public
+	// (bot-walled at worst), so this is false for them.
+	requiresAccount bool
 	// searchURL builds the human results-page URL for a keyword + focus.
 	searchURL func(keyword string, focus config.JobFocus) string
 	// isPosting reports whether a link looks like an individual posting on this
@@ -52,7 +58,7 @@ var visionBoardList = []visionBoard{
 		},
 	},
 	{
-		id: "linkedin", name: "LinkedIn", account: "linkedin",
+		id: "linkedin", name: "LinkedIn", account: "linkedin", requiresAccount: true,
 		searchURL: func(kw string, f config.JobFocus) string {
 			loc := f.Location.Query()
 			if loc == "" {
@@ -63,7 +69,7 @@ var visionBoardList = []visionBoard{
 		isPosting: func(u string) bool { return strings.Contains(u, "/jobs/view/") },
 	},
 	{
-		id: "ziprecruiter", name: "ZipRecruiter", account: "ziprecruiter",
+		id: "ziprecruiter", name: "ZipRecruiter", account: "ziprecruiter", requiresAccount: true,
 		searchURL: func(kw string, f config.JobFocus) string {
 			return "https://www.ziprecruiter.com/jobs-search?search=" + url.QueryEscape(kw) + "&location=" + url.QueryEscape(f.Location.Query())
 		},
@@ -116,11 +122,22 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 		maxScreens = 3
 	}
 
-	sess, err := browser.NewSession(ctx, browser.SessionOptions{Headful: q.Creds.Browser.Headful})
+	sess, engineNote, err := browser.NewShooter(ctx, browser.SessionOptions{
+		Headful:    q.Creds.Browser.Headful,
+		ProfileDir: q.BrowserProfileDir,
+		Engine:     q.Creds.Browser.Engine,
+		PythonPath: q.Creds.Browser.PythonPath,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("could not start a browser for vision search: %w", err)
 	}
 	defer sess.Close()
+
+	mode := "headless"
+	if q.Creds.Browser.Headful {
+		mode = "a visible"
+	}
+	q.logf("info", "AI Browser Search: using the %s; driving %s browser across %d board(s) — slower than the other sources, hang tight", engineNote, mode, len(boards))
 
 	out := map[string]store.Job{}
 	var firstErr error
@@ -132,26 +149,49 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 		// Replay a connected session for this board if we have one (cookies + UA).
 		cookie, ua := "", ""
 		if b.account != "" {
-			if acc, ok := q.Creds.Accounts[b.account]; ok {
+			if acc, ok := q.Creds.Accounts[b.account]; ok && acc.Cookie != "" {
 				cookie, ua = acc.Cookie, acc.UserAgent
+			} else if b.requiresAccount {
+				// No session, and this board gates search behind sign-in — searching
+				// logged-out would just screenshot a sign-in wall, so skip it.
+				q.logf("warn", "%s requires a connected account (it hides search results behind sign-in) — connect it under Settings → Connected accounts, then re-run. Skipping.", b.name)
+				continue
+			} else {
+				q.logf("info", "%s: no connected account — searching logged-out (connect it in Settings for better results)", b.name)
 			}
 		}
 		for _, kw := range queries {
 			if ctx.Err() != nil {
 				break
 			}
+			label := b.name
+			if kw != "" {
+				label = fmt.Sprintf("%s — %q", b.name, kw)
+			}
 			pageURL := b.searchURL(kw, q.Focus)
+			q.logf("info", "%s: opening search results…", label)
 			shots, err := sess.Shots(ctx, pageURL, cookie, ua, maxScreens)
 			if err != nil {
 				if firstErr == nil {
 					firstErr = err
 				}
+				q.logf("warn", "%s: could not load the page (%v)", label, err)
 				continue
 			}
 			if len(shots.Images) == 0 {
+				q.logf("warn", "%s: captured no screenshots", label)
 				continue
 			}
-			for _, j := range vb.readListings(ctx, q, b, shots, perBoard, &firstErr) {
+			if reason := looksLikeWall(shots.Title, shots.Text); reason != "" {
+				q.logf("warn", "%s: the page looks like %s (%q) — connect this account in Settings or try another board", label, reason, strings.TrimSpace(shots.Title))
+			}
+			found := vb.readListings(ctx, q, b, shots, perBoard, &firstErr)
+			if len(found) == 0 {
+				q.logf("info", "%s: the model read no listings from %d screenshot(s) (page title: %q)", label, len(shots.Images), strings.TrimSpace(shots.Title))
+			} else {
+				q.logf("info", "%s: read %d listing(s) from %d screenshot(s)", label, len(found), len(shots.Images))
+			}
+			for _, j := range found {
 				if _, dup := out[j.ID]; !dup {
 					out[j.ID] = j
 				}
@@ -163,6 +203,46 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 		return nil, firstErr
 	}
 	return mapToSlice(out), nil
+}
+
+// wallSignals: looksLikeWall returns a short human reason when a page title/text
+// matches a known bot-check/captcha interstitial or a sign-in wall — the usual
+// reason a board returns "no jobs". It's only used to warn the user; the
+// screenshots are still sent to the vision model regardless (the heuristic can
+// false-positive, and the model sometimes reads a partially-rendered page).
+func looksLikeWall(title, text string) string {
+	t := strings.ToLower(title)
+	hay := strings.ToLower(title + "\n" + text)
+	// Hard bot/captcha interstitials — distinctive phrases, safe to match anywhere.
+	for _, s := range []struct{ needle, reason string }{
+		{"just a moment", "a Cloudflare bot check"},
+		{"attention required", "a Cloudflare block"},
+		{"verify you are human", "a human-verification check"},
+		{"please verify you are a human", "a human-verification check"},
+		{"are you a robot", "a bot check"},
+		{"px-captcha", "a captcha"},
+		{"unusual traffic", "a rate-limit / bot check"},
+		{"security check", "a security check"},
+		{"press & hold", "a press-and-hold bot check"},
+	} {
+		if strings.Contains(hay, s.needle) {
+			return s.reason
+		}
+	}
+	// Sign-in / sign-up walls — only trust the page title here, since a real
+	// results page also carries "sign in" links in its body and would mis-match.
+	for _, s := range []struct{ needle, reason string }{
+		{"sign in", "a sign-in wall"},
+		{"sign up", "a sign-up wall"},
+		{"log in", "a sign-in wall"},
+		{"login", "a sign-in wall"},
+		{"join linkedin", "a LinkedIn sign-in wall"},
+	} {
+		if strings.Contains(t, s.needle) {
+			return s.reason
+		}
+	}
+	return ""
 }
 
 // readListings sends the screenshots (plus candidate posting links) to the
