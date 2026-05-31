@@ -129,6 +129,19 @@ async def handle(browser, apply_stealth, StealthConfig, req):
         # check) generous time to auto-solve in a real browser before shooting.
         await wait_for_content(page, 20.0)
 
+        # HTML mode: return the fully-rendered page source for the HTML scrapers
+        # to parse (JSON-LD etc.) — no screenshots, much cheaper than vision.
+        if (req.get("mode") or "shots") == "html":
+            try:
+                html = await page.content()
+            except Exception:
+                html = ""
+            try:
+                title = await page.title()
+            except Exception:
+                title = ""
+            return {"html": html, "title": title}
+
         images = []
         for i in range(max_screens):
             png = await page.screenshot(type="png")

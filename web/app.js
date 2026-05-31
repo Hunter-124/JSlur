@@ -164,27 +164,41 @@ function readProvider(id) {
 
 function renderSources() {
   const enabled = new Set((CFG.focus && CFG.focus.sources) || []);
-  $("sourceList").innerHTML = SOURCES.map(
-    (s) => `<label><input type="checkbox" value="${esc(s.id)}" ${enabled.has(s.id) ? "checked" : ""}/> <span>${esc(s.name)}</span>${s.needsCredentials ? ` <span class="hint">${icon("key", "ic-xs")} needs key</span>` : ""}</label>`
-  ).join("");
+  $("sourceList").innerHTML = SOURCES.map((s) => {
+    const tag = s.scrape
+      ? `<span class="src-tag scrape" title="Fetched by reading the website — obeys the scrape method below">scraped</span>`
+      : `<span class="src-tag api" title="Fetched via API/feed — not affected by the scrape method">API</span>`;
+    const key = s.needsCredentials ? ` <span class="hint">${icon("key", "ic-xs")} needs key</span>` : "";
+    return `<label><input type="checkbox" value="${esc(s.id)}" ${enabled.has(s.id) ? "checked" : ""}/> <span>${esc(s.name)}</span>${tag}${key}</label>`;
+  }).join("");
 }
 
 function renderBrowserSearch() {
   const b = (CFG.sources && CFG.sources.browser) || {};
+  const mode = b.scrapeMode || "stealth";
+  document.querySelectorAll('#scrapeMode input[name="scrapemode"]').forEach((i) => { i.checked = i.value === mode; });
   const boards = new Set(b.boards && b.boards.length ? b.boards : ["indeed", "linkedin"]);
   document.querySelectorAll("#browserBoards input[data-bb]").forEach((i) => { i.checked = boards.has(i.value); });
   if ($("bb_headful")) $("bb_headful").checked = !!b.headful;
   if ($("bb_screens")) $("bb_screens").value = b.maxScreens || 3;
-  if ($("bb_engine")) $("bb_engine").value = b.engine || "chromedp";
   if ($("bb_python")) $("bb_python").value = b.pythonPath || "";
-  updateBrowserEngineHint();
+  updateScrapeMode();
 }
 
-// updateBrowserEngineHint shows the Python-engine setup note only when selected.
-function updateBrowserEngineHint() {
-  const py = $("bb_engine") && $("bb_engine").value === "python";
-  if ($("bb_python_row")) $("bb_python_row").hidden = !py;
-  if ($("bb_python_hint")) $("bb_python_hint").hidden = !py;
+// scrapeMode returns the selected radio value (defaults to stealth).
+function scrapeMode() {
+  const sel = document.querySelector('#scrapeMode input[name="scrapemode"]:checked');
+  return sel ? sel.value : "stealth";
+}
+
+// updateScrapeMode reveals only the options relevant to the chosen mode:
+// the Python sidecar note for stealth/vision, and the board picker for vision.
+function updateScrapeMode() {
+  const mode = scrapeMode();
+  const sidecar = mode === "stealth" || mode === "vision";
+  if ($("bb_python_row")) $("bb_python_row").hidden = !sidecar;
+  if ($("bb_python_hint")) $("bb_python_hint").hidden = !sidecar;
+  if ($("visionOpts")) $("visionOpts").hidden = mode !== "vision";
 }
 
 function updateProviderDim() {
@@ -227,10 +241,10 @@ function collectConfig() {
     adzuna: { appId: $("adzuna_id").value.trim(), appKey: $("adzuna_key").value.trim() },
     usajobs: { apiKey: $("usajobs_key").value.trim(), email: $("usajobs_email").value.trim() },
     browser: {
+      scrapeMode: scrapeMode(),
       boards: Array.from(document.querySelectorAll("#browserBoards input[data-bb]:checked")).map((i) => i.value),
       headful: $("bb_headful") ? $("bb_headful").checked : false,
       maxScreens: intNum($("bb_screens") ? $("bb_screens").value : 3, 3),
-      engine: $("bb_engine") ? $("bb_engine").value : "chromedp",
       pythonPath: $("bb_python") ? $("bb_python").value.trim() : "",
     },
   });
@@ -730,7 +744,7 @@ function init() {
   document.querySelectorAll("[data-models]").forEach((b) => b.addEventListener("click", () => fetchModels(b.dataset.models)));
 
   $("ai_active").addEventListener("change", updateProviderDim);
-  if ($("bb_engine")) $("bb_engine").addEventListener("change", updateBrowserEngineHint);
+  document.querySelectorAll('#scrapeMode input[name="scrapemode"]').forEach((i) => i.addEventListener("change", updateScrapeMode));
   $("jobFilter").addEventListener("change", renderJobs);
   $("btnSearch").addEventListener("click", doSearch);
   $("btnSearch2").addEventListener("click", doSearch);

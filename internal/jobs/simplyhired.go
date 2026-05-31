@@ -14,7 +14,7 @@ import (
 type simplyhired struct{}
 
 func (simplyhired) ID() string             { return "simplyhired" }
-func (simplyhired) Name() string           { return "SimplyHired (scraped, best-effort)" }
+func (simplyhired) Name() string           { return "SimplyHired" }
 func (simplyhired) NeedsCredentials() bool { return false }
 
 func (s simplyhired) Search(ctx context.Context, q Query) ([]store.Job, error) {
@@ -32,7 +32,7 @@ func (s simplyhired) Search(ctx context.Context, q Query) ([]store.Job, error) {
 	for _, kw := range queries {
 		u := fmt.Sprintf("https://www.simplyhired.com/search?q=%s&l=%s",
 			url.QueryEscape(kw), url.QueryEscape(loc))
-		doc, err := getDoc(ctx, u, accountHeaders(q, s.ID()))
+		doc, err := q.doc(ctx, u, accountHeaders(q, s.ID()))
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

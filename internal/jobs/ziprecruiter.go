@@ -22,7 +22,7 @@ import (
 type ziprecruiter struct{}
 
 func (ziprecruiter) ID() string             { return "ziprecruiter" }
-func (ziprecruiter) Name() string           { return "ZipRecruiter (scraped)" }
+func (ziprecruiter) Name() string           { return "ZipRecruiter" }
 func (ziprecruiter) NeedsCredentials() bool { return false }
 
 var zrHeaders = map[string]string{
@@ -173,7 +173,7 @@ func (s ziprecruiter) searchWebsite(ctx context.Context, q Query) ([]store.Job, 
 	for _, kw := range queries {
 		u := fmt.Sprintf("https://www.ziprecruiter.com/jobs-search?search=%s&location=%s",
 			url.QueryEscape(kw), url.QueryEscape(loc))
-		doc, err := getDoc(ctx, u, accountHeaders(q, s.ID()))
+		doc, err := q.doc(ctx, u, accountHeaders(q, s.ID()))
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

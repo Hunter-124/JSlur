@@ -56,6 +56,12 @@ type Query struct {
 	// browser reuses across searches so a solved Cloudflare challenge survives.
 	// Empty uses a throwaway profile.
 	BrowserProfileDir string
+	// Render, when set, fetches a URL's fully-rendered HTML through a real/stealth
+	// browser (the engine wires it to the Python sidecar or chromedp). The HTML
+	// scraping sources prefer it over plain HTTP — it runs the page's JS and
+	// carries the humanized fingerprint that gets past bot walls. The cookie +
+	// User-Agent in the request headers are replayed. nil = plain HTTP only.
+	Render func(ctx context.Context, url, cookie, userAgent string) (string, error)
 }
 
 // logf reports a progress note via the query's Log hook, if one is set.
@@ -63,6 +69,16 @@ func (q Query) logf(level, format string, args ...any) {
 	if q.Log != nil {
 		q.Log(level, fmt.Sprintf(format, args...))
 	}
+}
+
+// doc fetches a page for the scraping sources: through the stealth/browser
+// renderer when one is configured (q.Render), otherwise plain HTTP. The board's
+// browser UA + any connected-session Cookie ride along either way.
+func (q Query) doc(ctx context.Context, url string, headers map[string]string) (string, error) {
+	if q.Render != nil {
+		return q.Render(ctx, url, headers["Cookie"], headers["User-Agent"])
+	}
+	return getDoc(ctx, url, headers)
 }
 
 // Source is a single job board.
@@ -90,17 +106,29 @@ var Registry = map[string]Source{
 }
 
 // sourceOrder fixes the GUI display order of sources. Keyless scraped boards
-// come first, then the keyed APIs.
+// come first, then the keyed APIs. "visionbrowser" is intentionally absent: it
+// is no longer a per-board source the user ticks, but the global "vision" scrape
+// mode (config.ScrapeVision), wired in by the engine.
 var sourceOrder = []string{
 	"themuse", "linkedin", "indeed", "ziprecruiter", "simplyhired",
-	"monster", "craigslist", "visionbrowser", "remotive", "adzuna", "usajobs",
+	"monster", "craigslist", "remotive", "adzuna", "usajobs",
 }
+
+// BrowserScrapeSources are the boards fetched by rendering their HTML search
+// page through a real browser, so they honour the global scrape mode (blatant /
+// stealth). Every other board hits an API/feed and ignores the mode. LinkedIn
+// (guest XHR fragment) and Craigslist (RSS) keep their specialized fetches and
+// are excluded — browser-rendering those would change/break the response.
+var BrowserScrapeSources = map[string]bool{"ziprecruiter": true, "simplyhired": true, "monster": true}
 
 // SourceInfo describes a source for the GUI.
 type SourceInfo struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	NeedsCredentials bool   `json:"needsCredentials"`
+	// Scrape reports whether the source is fetched by browser-rendering its page
+	// (so it obeys the global scrape mode). False means it uses an API/feed.
+	Scrape bool `json:"scrape"`
 }
 
 // AvailableSources lists every registered source in display order.
@@ -108,7 +136,7 @@ func AvailableSources() []SourceInfo {
 	out := make([]SourceInfo, 0, len(Registry))
 	for _, id := range sourceOrder {
 		if s, ok := Registry[id]; ok {
-			out = append(out, SourceInfo{ID: id, Name: s.Name(), NeedsCredentials: s.NeedsCredentials()})
+			out = append(out, SourceInfo{ID: id, Name: s.Name(), NeedsCredentials: s.NeedsCredentials(), Scrape: BrowserScrapeSources[id]})
 		}
 	}
 	return out

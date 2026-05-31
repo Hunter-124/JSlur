@@ -18,7 +18,7 @@ import (
 type craigslist struct{}
 
 func (craigslist) ID() string             { return "craigslist" }
-func (craigslist) Name() string           { return "Craigslist (scraped, local)" }
+func (craigslist) Name() string           { return "Craigslist" }
 func (craigslist) NeedsCredentials() bool { return false }
 
 func (c craigslist) Search(ctx context.Context, q Query) ([]store.Job, error) {

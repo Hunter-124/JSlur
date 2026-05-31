@@ -38,7 +38,10 @@ func liveEngine(t *testing.T) (*Engine, func()) {
 	}
 	seed.AI.Active = config.ProviderLocal
 	seed.AI.Local = config.ProviderConfig{BaseURL: base, Model: model, ReasoningEffort: "none", MaxTokens: 2048, Temperature: 0}
-	seed.Focus.Sources = []string{"visionbrowser"}
+	// Default: exercise the global "vision" scrape mode. The engine wires the
+	// visionbrowser source in from this mode, so no source needs to be ticked.
+	seed.Sources.Browser.ScrapeMode = config.ScrapeVision
+	seed.Focus.Sources = []string{"themuse"} // placeholder so the list isn't empty
 	// Headless by default for an unattended test; AUTOAPPLY_LIVE_HEADFUL=1 mirrors
 	// the user's real (headful) setup, which is far harder for boards to bot-wall.
 	seed.Sources.Browser.Headful = os.Getenv("AUTOAPPLY_LIVE_HEADFUL") != ""
@@ -50,8 +53,10 @@ func liveEngine(t *testing.T) (*Engine, func()) {
 	} else if len(seed.Sources.Browser.Boards) == 0 {
 		seed.Sources.Browser.Boards = []string{"indeed", "google"}
 	}
-	if eng := os.Getenv("AUTOAPPLY_LIVE_ENGINE"); eng != "" {
-		seed.Sources.Browser.Engine = eng // "python" exercises the Playwright stealth sidecar
+	if scr := os.Getenv("AUTOAPPLY_LIVE_SCRAPE"); scr != "" {
+		// Exercise the stealth HTML-scraping path instead of the vision source.
+		seed.Focus.Sources = strings.Split(scr, ",")
+		seed.Sources.Browser.ScrapeMode = config.ScrapeStealth
 	}
 
 	// A stable dir (AUTOAPPLY_LIVE_PROFILE) persists the vision browser profile

@@ -391,6 +391,24 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--primary); 
 .source-list input { margin: 0; }
 .source-list .hint { margin-left: auto; }
 
+/* small source-type tag (API vs scraped) */
+.src-tag { margin-left: auto; font-size: 10px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; padding: 2px 7px; border-radius: var(--r-pill); border: 1px solid var(--border-2); color: var(--text-3); }
+.src-tag.scrape { color: var(--primary-700); border-color: var(--primary-ring); background: var(--primary-soft); }
+.source-list label .src-tag + .hint { margin-left: 8px; }
+
+/* scrape-method radio cards */
+.mode-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 8px; }
+.mode-card { display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 12px 13px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); cursor: pointer; transition: border-color .12s, background .12s; }
+.mode-card:hover { border-color: var(--border-2); }
+.mode-card input { margin: 2px 0 0; accent-color: var(--primary); }
+.mode-card:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.mode-body { display: flex; flex-direction: column; gap: 4px; }
+.mode-name { font-size: 13.5px; font-weight: 650; color: var(--text); }
+.mode-card .hint { line-height: 1.5; }
+@media (max-width: 760px) { .mode-grid { grid-template-columns: 1fr; } }
+
+.sub-h { font-size: 12.5px; font-weight: 650; color: var(--text-2); margin: 18px 0 4px; }
+
 .reveal.smtp, .reveal.browser-search { border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; background: var(--surface-2); }
 .reveal.smtp[open] > summary, .reveal.browser-search[open] > summary { margin-bottom: 14px; }
 .browser-search .source-list { margin: 8px 0 14px; }

@@ -19,7 +19,7 @@ import (
 type indeed struct{}
 
 func (indeed) ID() string             { return "indeed" }
-func (indeed) Name() string           { return "Indeed (scraped)" }
+func (indeed) Name() string           { return "Indeed" }
 func (indeed) NeedsCredentials() bool { return false }
 
 const (

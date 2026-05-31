@@ -16,7 +16,7 @@ import (
 type linkedin struct{}
 
 func (linkedin) ID() string             { return "linkedin" }
-func (linkedin) Name() string           { return "LinkedIn (scraped)" }
+func (linkedin) Name() string           { return "LinkedIn" }
 func (linkedin) NeedsCredentials() bool { return false }
 
 const liEndpoint = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"

@@ -332,10 +332,30 @@
           <h3 class="section-h"><svg class="ic"><use href="#i-globe"/></svg> Job sources <span class="hint">(some need a free API key — add it in Settings)</span></h3>
           <div id="sourceList" class="source-list"></div>
 
-          <details class="reveal browser-search" id="browserSearchOpts">
-            <summary><svg class="ic"><use href="#i-scan"/></svg> AI Browser Search (vision) — options</summary>
-            <p class="hint" style="line-height:1.6">Enable <strong>AI Browser Search (vision)</strong> in the list above to drive a <em>real browser</em> to each board's normal search page and have your AI model read the listings straight off screenshots. It browses like a person instead of hitting scrape endpoints, so it isn't rate-limited or Cloudflare-blocked. Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). <strong>LinkedIn and ZipRecruiter hide search results behind sign-in</strong>, so they require a connected session — set them up under <em>Connected accounts</em> below; they're skipped until you do. Indeed and Google Jobs are public (no account needed).</p>
-            <label class="block">Boards to browse</label>
+          <h3 class="section-h"><svg class="ic"><use href="#i-scan"/></svg> Scrape method <span class="hint">(how the <em>scraped</em> boards above are fetched — API boards ignore this)</span></h3>
+          <div id="scrapeMode" class="mode-grid">
+            <label class="mode-card">
+              <input type="radio" name="scrapemode" value="blatant" />
+              <span class="mode-body"><span class="mode-name">Blatant scrape</span><span class="hint">Built-in headless browser. Fast, zero setup — best for boards without tough bot walls.</span></span>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="scrapemode" value="stealth" />
+              <span class="mode-body"><span class="mode-name">Stealth scrape</span><span class="hint">Playwright + <code>pw-stealth-enhanced</code> evasions. Gets past Cloudflare and bot walls. No AI cost.</span></span>
+            </label>
+            <label class="mode-card">
+              <input type="radio" name="scrapemode" value="vision" />
+              <span class="mode-body"><span class="mode-name">Vision scrape</span><span class="hint">A vision AI reads listings off screenshots. Beats anything, but spends vision tokens.</span></span>
+            </label>
+          </div>
+
+          <div class="form-grid" style="margin-top:14px">
+            <label class="check"><input id="bb_headful" type="checkbox" /> <span>Show the browser window while it works</span></label>
+            <label id="bb_python_row" hidden>Python path <span class="hint">(optional, for stealth/vision)</span><input id="bb_python" type="text" placeholder="python" /></label>
+          </div>
+          <p class="hint" id="bb_python_hint" hidden style="margin:8px 0 0;line-height:1.6">Stealth &amp; Vision drive a local Python Playwright sidecar. Install once: <code>pip install playwright pw-stealth-enhanced</code> then <code>playwright install chromium</code>. If it's missing, the app falls back to the built-in browser automatically. Works best with <em>Show the browser window</em> on.</p>
+
+          <div id="visionOpts" hidden>
+            <h4 class="sub-h">Vision boards <span class="hint">(which sites the vision browser searches)</span></h4>
             <div id="browserBoards" class="source-list">
               <label><input type="checkbox" value="indeed" data-bb /> <span>Indeed</span></label>
               <label><input type="checkbox" value="linkedin" data-bb /> <span>LinkedIn</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
@@ -343,18 +363,10 @@
               <label><input type="checkbox" value="google" data-bb /> <span>Google Jobs</span></label>
             </div>
             <div class="form-grid">
-              <label class="check"><input id="bb_headful" type="checkbox" /> <span>Show the browser window while it searches</span></label>
               <label>Screens per board <span class="hint">(more = more jobs, slower)</span><input id="bb_screens" type="number" min="1" max="6" /></label>
-              <label>Browser engine
-                <select id="bb_engine" class="select">
-                  <option value="chromedp">Built-in (no setup)</option>
-                  <option value="python">Python Playwright (stronger stealth)</option>
-                </select>
-              </label>
-              <label id="bb_python_row" hidden>Python path <span class="hint">(optional)</span><input id="bb_python" type="text" placeholder="python" /></label>
             </div>
-            <p class="hint" id="bb_python_hint" hidden style="margin:6px 0 0;line-height:1.6">The <strong>Python Playwright</strong> engine gets past tougher bot walls (e.g. Indeed's security check) but needs a local Python with: <code>pip install playwright pw-stealth-enhanced</code> then <code>playwright install chromium</code>. It falls back to the built-in browser if unavailable. Works best with <em>Show the browser window</em> on.</p>
-          </details>
+            <p class="hint" style="margin:8px 0 0;line-height:1.6">Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). <strong>LinkedIn and ZipRecruiter hide results behind sign-in</strong> — connect them under <em>Connected accounts</em> in Settings, or they're skipped. Indeed and Google Jobs are public.</p>
+          </div>
         </div>
       </section>
 

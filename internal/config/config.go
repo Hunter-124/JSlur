@@ -155,27 +155,72 @@ type SourcesConfig struct {
 	Browser BrowserSearchConfig `json:"browser"`
 }
 
-// BrowserSearchConfig tunes the vision-based browser search source: instead of
-// hitting scrape endpoints, it drives a real browser to each board's normal
-// search-results page and has a vision-capable AI model read the listings off
-// screenshots — so it isn't rate-limited or blocked the way plain HTTP can be.
+// Scrape modes select how the browser-based job boards are fetched. The mode is
+// global: it applies to every enabled board that isn't fetched through a plain
+// API/feed (see jobs.BrowserScrapeSources). API-only boards ignore it.
+const (
+	// ScrapeBlatant renders the scraped boards through the built-in headless
+	// browser (chromedp). Fast and zero-setup, but does nothing to hide that it's
+	// automated — fine for boards without aggressive bot walls.
+	ScrapeBlatant = "blatant"
+	// ScrapeStealth renders the scraped boards through the Playwright sidecar
+	// driven by pw-stealth-enhanced, whose anti-bot evasions get past walls the
+	// built-in browser can't. Falls back to the built-in browser if Python or the
+	// package isn't installed.
+	ScrapeStealth = "stealth"
+	// ScrapeVision drives a real browser to each board's normal search page and
+	// has a vision-capable AI model read the listings straight off screenshots, so
+	// it isn't rate-limited or blocked the way an HTML scrape can be. Costs vision
+	// tokens. Uses the stealth (pw-stealth-enhanced) browser under the hood.
+	ScrapeVision = "vision"
+)
+
+// BrowserSearchConfig tunes how the browser-based job boards are fetched. The
+// ScrapeMode is global across all such boards; the remaining fields are shared
+// tuning knobs (Headful applies to every mode; Boards/MaxScreens apply to the
+// vision mode only).
 type BrowserSearchConfig struct {
-	// Boards is the set of board ids to drive ("indeed", "linkedin",
+	// ScrapeMode is the global fetch strategy: "blatant", "stealth" or "vision"
+	// (see the Scrape* constants). Empty defaults to "stealth".
+	ScrapeMode string `json:"scrapeMode,omitempty"`
+	// Boards is the set of board ids the vision mode drives ("indeed", "linkedin",
 	// "ziprecruiter", "google"). Empty means a sensible default (Indeed + LinkedIn).
 	Boards []string `json:"boards"`
-	// Headful shows the browser window while searching (default: headless).
+	// Headful shows the browser window while it works (default: headless).
 	Headful bool `json:"headful"`
-	// MaxScreens caps the screenshots captured per board search (default 3). More
-	// screens read more of the page (more jobs) but are slower and cost more.
+	// MaxScreens caps the screenshots the vision mode captures per board (default
+	// 3). More screens read more of the page (more jobs) but are slower and cost
+	// more vision tokens.
 	MaxScreens int `json:"maxScreens"`
-	// Engine selects the browser backend: "" / "chromedp" uses the built-in
-	// browser; "python" uses a Playwright stealth sidecar (pw-stealth-enhanced)
-	// that gets past tougher bot walls like Indeed's, but needs a local Python with
+	// PythonPath overrides the Python executable used for the stealth sidecar
+	// (stealth and vision modes). Empty uses "python" from PATH. The sidecar needs
 	// `pip install playwright pw-stealth-enhanced` and `playwright install chromium`.
-	Engine string `json:"engine,omitempty"`
-	// PythonPath overrides the Python executable used for the stealth sidecar.
-	// Empty uses "python" from PATH.
 	PythonPath string `json:"pythonPath,omitempty"`
+}
+
+// Mode returns the effective scrape mode, applying the default when unset.
+func (b BrowserSearchConfig) Mode() string {
+	if b.ScrapeMode == "" {
+		return ScrapeStealth
+	}
+	return b.ScrapeMode
+}
+
+// Engine returns the browser backend implied by the scrape mode: the built-in
+// chromedp browser for "blatant", the pw-stealth-enhanced Playwright sidecar
+// ("python") for "stealth" and "vision".
+func (b BrowserSearchConfig) Engine() string {
+	if b.Mode() == ScrapeBlatant {
+		return "chromedp"
+	}
+	return "python"
+}
+
+// RendersScrapes reports whether the mode fetches the HTML-scraped boards
+// through a real browser (true for blatant/stealth). Vision uses its own
+// screenshot path instead, so the HTML scrapers fall back to plain HTTP.
+func (b BrowserSearchConfig) RendersScrapes() bool {
+	return b.Mode() == ScrapeBlatant || b.Mode() == ScrapeStealth
 }
 
 // Account is a captured browser session for a job board: its cookies (as a
@@ -259,7 +304,7 @@ func Default() Config {
 			MinPrescreenScore:   45,
 		},
 		Sources: SourcesConfig{
-			Browser: BrowserSearchConfig{Boards: []string{"indeed", "linkedin"}, MaxScreens: 3},
+			Browser: BrowserSearchConfig{ScrapeMode: ScrapeStealth, Boards: []string{"indeed", "linkedin"}, MaxScreens: 3},
 		},
 		AI: AIConfig{
 			Active: ProviderAnthropic,

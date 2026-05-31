@@ -18,7 +18,7 @@ import (
 type monster struct{}
 
 func (monster) ID() string             { return "monster" }
-func (monster) Name() string           { return "Monster (scraped, JS-rendered)" }
+func (monster) Name() string           { return "Monster" }
 func (monster) NeedsCredentials() bool { return false }
 
 func (m monster) Search(ctx context.Context, q Query) ([]store.Job, error) {
@@ -46,10 +46,17 @@ func (m monster) Search(ctx context.Context, q Query) ([]store.Job, error) {
 	for _, kw := range queries {
 		u := fmt.Sprintf("https://www.monster.com/jobs/search?q=%s&where=%s",
 			url.QueryEscape(kw), url.QueryEscape(loc))
-		// Render with a real browser so Monster's JS populates the page.
-		doc, err := browser.RenderHTML(ctx, u, ua, 4*time.Second)
+		// Monster's results are JS-populated, so the page must be rendered. Prefer
+		// the configured stealth renderer (q.Render); otherwise use the built-in
+		// headless render; fall back to a plain fetch (works with a session).
+		var doc string
+		var err error
+		if q.Render != nil {
+			doc, err = q.Render(ctx, u, accountHeaders(q, m.ID())["Cookie"], ua)
+		} else {
+			doc, err = browser.RenderHTML(ctx, u, ua, 4*time.Second)
+		}
 		if err != nil {
-			// Browser unavailable? Try a plain fetch (works with a connected session).
 			doc, err = getDoc(ctx, u, accountHeaders(q, m.ID()))
 			if err != nil {
 				if firstErr == nil {

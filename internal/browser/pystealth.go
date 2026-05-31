@@ -27,35 +27,60 @@ import (
 //go:embed stealth_sidecar.py
 var stealthSidecarPy string
 
-// Shooter captures rendered pages for vision search. Both the built-in chromedp
-// Session and the Python Playwright sidecar implement it, so the vision source
-// can use either behind one interface.
+// Shooter captures rendered pages (screenshots) for vision search.
 type Shooter interface {
 	Shots(ctx context.Context, pageURL, cookieHeader, userAgent string, maxScreens int) (Shots, error)
 	Close()
 }
 
-// NewShooter returns a page-capture engine for vision search. When
-// opts.Engine == "python" it launches the Playwright stealth sidecar, falling
-// back to the built-in chromedp engine if that's unavailable. The returned note
-// describes the engine actually in use (for the caller to log).
-func NewShooter(ctx context.Context, opts SessionOptions) (Shooter, string, error) {
+// Renderer fetches a URL's fully-rendered HTML for the stealth scraping path.
+type Renderer interface {
+	RenderHTML(ctx context.Context, pageURL, cookieHeader, userAgent string) (string, error)
+	Close()
+}
+
+// engine is the union of both capabilities; the built-in chromedp Session and
+// the Python sidecar each implement it, so one factory serves both interfaces.
+type engine interface {
+	Shots(ctx context.Context, pageURL, cookieHeader, userAgent string, maxScreens int) (Shots, error)
+	RenderHTML(ctx context.Context, pageURL, cookieHeader, userAgent string) (string, error)
+	Close()
+}
+
+// newEngine builds the requested browser backend: the Python Playwright stealth
+// sidecar when opts.Engine == "python" (falling back to the built-in chromedp
+// browser if it can't start), else chromedp. The note describes what's in use.
+func newEngine(ctx context.Context, opts SessionOptions) (engine, string, error) {
 	if strings.EqualFold(opts.Engine, "python") {
-		sh, err := newPyShooter(ctx, opts)
-		if err == nil {
+		if sh, err := newPyShooter(ctx, opts); err == nil {
 			return sh, "Python Playwright stealth engine", nil
+		} else {
+			s, cerr := NewSession(ctx, opts)
+			if cerr != nil {
+				return nil, "", fmt.Errorf("python engine unavailable (%v); built-in engine also failed: %w", err, cerr)
+			}
+			return s, fmt.Sprintf("built-in browser (Python stealth engine unavailable: %s)", truncate(err.Error(), 200)), nil
 		}
-		s, cerr := NewSession(ctx, opts)
-		if cerr != nil {
-			return nil, "", fmt.Errorf("python engine unavailable (%v); built-in engine also failed: %w", err, cerr)
-		}
-		return s, fmt.Sprintf("built-in browser (Python stealth engine unavailable: %s)", truncate(err.Error(), 200)), nil
 	}
 	s, err := NewSession(ctx, opts)
 	if err != nil {
 		return nil, "", err
 	}
 	return s, "built-in browser", nil
+}
+
+// NewShooter returns a screenshot engine for vision search (Python sidecar when
+// selected, else built-in). The note describes the engine actually in use.
+func NewShooter(ctx context.Context, opts SessionOptions) (Shooter, string, error) {
+	e, note, err := newEngine(ctx, opts)
+	return e, note, err
+}
+
+// NewRenderer returns an HTML-render engine for the stealth scraping path,
+// picking the backend the same way NewShooter does.
+func NewRenderer(ctx context.Context, opts SessionOptions) (Renderer, string, error) {
+	e, note, err := newEngine(ctx, opts)
+	return e, note, err
 }
 
 // pyShooter drives the Python Playwright stealth sidecar over stdin/stdout.
@@ -173,27 +198,36 @@ func (s *pyShooter) await(ctx context.Context, timeout time.Duration) ([]byte, e
 	}
 }
 
-func (s *pyShooter) Shots(ctx context.Context, pageURL, cookieHeader, userAgent string, maxScreens int) (Shots, error) {
+// roundtrip sends one request to the sidecar and returns its one response line,
+// serialized so concurrent callers can't interleave the protocol. A missed
+// response marks the sidecar broken (a desync risk) so it isn't reused.
+func (s *pyShooter) roundtrip(ctx context.Context, payload map[string]any, timeout time.Duration) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.broken {
-		return Shots{}, fmt.Errorf("stealth sidecar is no longer running")
+		return nil, fmt.Errorf("stealth sidecar is no longer running")
 	}
+	req, _ := json.Marshal(payload)
+	if _, err := s.stdin.Write(append(req, '\n')); err != nil {
+		s.broken = true
+		return nil, fmt.Errorf("write to stealth sidecar: %w", err)
+	}
+	line, err := s.await(ctx, timeout)
+	if err != nil {
+		s.broken = true
+		return nil, err
+	}
+	return line, nil
+}
+
+func (s *pyShooter) Shots(ctx context.Context, pageURL, cookieHeader, userAgent string, maxScreens int) (Shots, error) {
 	if maxScreens <= 0 {
 		maxScreens = 3
 	}
-
-	req, _ := json.Marshal(map[string]any{
+	line, err := s.roundtrip(ctx, map[string]any{
 		"url": pageURL, "cookie": cookieHeader, "ua": userAgent, "maxScreens": maxScreens,
-	})
-	if _, err := s.stdin.Write(append(req, '\n')); err != nil {
-		s.broken = true
-		return Shots{}, fmt.Errorf("write to stealth sidecar: %w", err)
-	}
-
-	line, err := s.await(ctx, 100*time.Second)
+	}, 100*time.Second)
 	if err != nil {
-		s.broken = true // desync risk after a missed response — don't reuse it
 		return Shots{}, err
 	}
 	var resp struct {
@@ -216,6 +250,28 @@ func (s *pyShooter) Shots(ctx context.Context, pageURL, cookieHeader, userAgent 
 		}
 	}
 	return out, nil
+}
+
+// RenderHTML fetches a URL's fully-rendered page source through the stealth
+// browser (replaying cookie + UA), for the HTML scraping sources to parse.
+func (s *pyShooter) RenderHTML(ctx context.Context, pageURL, cookieHeader, userAgent string) (string, error) {
+	line, err := s.roundtrip(ctx, map[string]any{
+		"url": pageURL, "cookie": cookieHeader, "ua": userAgent, "mode": "html",
+	}, 100*time.Second)
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		HTML  string `json:"html"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return "", fmt.Errorf("bad stealth sidecar response: %w", err)
+	}
+	if resp.Error != "" {
+		return "", fmt.Errorf("%s", resp.Error)
+	}
+	return resp.HTML, nil
 }
 
 func (s *pyShooter) Close() {

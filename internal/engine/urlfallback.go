@@ -55,7 +55,7 @@ func (e *Engine) visionFindApplyURL(ctx context.Context, job store.Job, provider
 	sess, _, err := browser.NewShooter(bctx, browser.SessionOptions{
 		Headful:    bcfg.Headful,
 		ProfileDir: e.visionProfileDir(),
-		Engine:     bcfg.Engine,
+		Engine:     bcfg.Engine(),
 		PythonPath: bcfg.PythonPath,
 	})
 	if err != nil {

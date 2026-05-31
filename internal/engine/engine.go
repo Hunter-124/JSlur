@@ -68,6 +68,14 @@ func (e *Engine) Search(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("no job sources enabled")
 	}
 
+	// "Vision" is a global scrape mode, not a board the user ticks. Wire the
+	// vision source in when that mode is selected, and make sure a stale config
+	// can never run it in the other modes.
+	focus.Sources = withVisionSource(focus.Sources, cfg.Sources.Browser.Mode() == config.ScrapeVision)
+	if len(focus.Sources) == 0 {
+		return 0, fmt.Errorf("no job sources enabled")
+	}
+
 	// The AI maps the free-text interest onto each board's categories. If no AI
 	// is configured the selector falls back to keyword matching, so search still
 	// works without a key.
@@ -90,6 +98,10 @@ func (e *Engine) Search(ctx context.Context) (int, error) {
 		Vision:            e.visionFunc(provider),
 		Log:               func(level, msg string) { e.logf(level, "%s", msg) },
 		BrowserProfileDir: e.visionProfileDir(),
+	}
+	// Optionally render the HTML scrapers' pages through the stealth browser.
+	if closeRender := e.attachRenderer(ctx, cfg, &q); closeRender != nil {
+		defer closeRender()
 	}
 	found, results := e.agg.Search(ctx, q)
 	for _, r := range results {
@@ -131,6 +143,23 @@ func (e *Engine) Search(ctx context.Context) (int, error) {
 	}
 	e.refresh()
 	return added, nil
+}
+
+// withVisionSource returns the source list with the "visionbrowser" source
+// present iff the vision scrape mode is on. It never appears in the GUI source
+// picker, so this is the only thing that enables it.
+func withVisionSource(sources []string, vision bool) []string {
+	const visionID = "visionbrowser"
+	out := make([]string, 0, len(sources)+1)
+	for _, id := range sources {
+		if id != visionID {
+			out = append(out, id)
+		}
+	}
+	if vision {
+		out = append(out, visionID)
+	}
+	return out
 }
 
 // dedupKey is a normalized company|title key for cross-source de-duplication.

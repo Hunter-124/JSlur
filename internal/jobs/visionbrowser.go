@@ -125,7 +125,7 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 	sess, engineNote, err := browser.NewShooter(ctx, browser.SessionOptions{
 		Headful:    q.Creds.Browser.Headful,
 		ProfileDir: q.BrowserProfileDir,
-		Engine:     q.Creds.Browser.Engine,
+		Engine:     q.Creds.Browser.Engine(),
 		PythonPath: q.Creds.Browser.PythonPath,
 	})
 	if err != nil {

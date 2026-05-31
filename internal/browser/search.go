@@ -178,6 +178,53 @@ func (s *Session) Close() {
 	}
 }
 
+// navigate applies the UA/cookie overrides, loads pageURL on runCtx, and waits
+// for the page to be past any Cloudflare/JS interstitial. Shared by Shots and
+// RenderHTML. UA rules: replay a connected account's UA when given (its
+// cf_clearance is bound to it); otherwise, headless, override the UA so it no
+// longer advertises "HeadlessChrome" (the cheapest bot tell) with matching
+// client-hint metadata. Headful already sends a real browser UA.
+func (s *Session) navigate(runCtx context.Context, pageURL, cookieHeader, userAgent string) error {
+	setup := []chromedp.Action{network.Enable()}
+	if userAgent != "" {
+		setup = append(setup, emulation.SetUserAgentOverride(userAgent))
+	} else if !s.headful {
+		setup = append(setup, emulation.SetUserAgentOverride(stealthUA).
+			WithAcceptLanguage("en-US,en;q=0.9").
+			WithUserAgentMetadata(stealthUAMetadata()))
+	}
+	if cookies := parseCookieHeader(cookieHeader, pageURL); len(cookies) > 0 {
+		setup = append(setup, network.SetCookies(cookies))
+	}
+	setup = append(setup, chromedp.Navigate(pageURL))
+	if err := chromedp.Run(runCtx, setup...); err != nil {
+		return fmt.Errorf("load %s: %w", hostOnly(pageURL), err)
+	}
+	// A headful browser solves the "Just a moment…" challenge on its own within a
+	// few seconds; wait for real content before reading the page.
+	waitForContent(runCtx, 15*time.Second)
+	return nil
+}
+
+// RenderHTML loads pageURL in this session (replaying cookie + UA, waiting out
+// any bot challenge) and returns the fully-rendered page HTML — letting the HTML
+// scraping sources reuse the stealth browser instead of plain HTTP.
+func (s *Session) RenderHTML(ctx context.Context, pageURL, cookieHeader, userAgent string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	runCtx, cancel := context.WithTimeout(s.ctx, 70*time.Second)
+	defer cancel()
+	if err := s.navigate(runCtx, pageURL, cookieHeader, userAgent); err != nil {
+		return "", err
+	}
+	var html string
+	if err := chromedp.Run(runCtx, chromedp.OuterHTML("html", &html, chromedp.ByQuery)); err != nil {
+		return "", fmt.Errorf("read html %s: %w", hostOnly(pageURL), err)
+	}
+	return html, nil
+}
+
 // Shots loads pageURL, replaying the given cookie header + User-Agent so the
 // request looks like a signed-in human, waits for the page to settle, then
 // scrolls while capturing up to maxScreens viewport screenshots and finally
@@ -195,31 +242,9 @@ func (s *Session) Shots(ctx context.Context, pageURL, cookieHeader, userAgent st
 	runCtx, cancel := context.WithTimeout(s.ctx, 70*time.Second)
 	defer cancel()
 
-	setup := []chromedp.Action{network.Enable()}
-	// User-Agent: replay a connected account's UA when we have one (its cf_clearance
-	// is bound to that UA). Otherwise, in headless mode, override the UA so it no
-	// longer advertises "HeadlessChrome" — the cheapest bot tell of all — with
-	// matching client-hint metadata. Headful already sends a real browser UA.
-	if userAgent != "" {
-		setup = append(setup, emulation.SetUserAgentOverride(userAgent))
-	} else if !s.headful {
-		setup = append(setup, emulation.SetUserAgentOverride(stealthUA).
-			WithAcceptLanguage("en-US,en;q=0.9").
-			WithUserAgentMetadata(stealthUAMetadata()))
+	if err := s.navigate(runCtx, pageURL, cookieHeader, userAgent); err != nil {
+		return Shots{}, err
 	}
-	if cookies := parseCookieHeader(cookieHeader, pageURL); len(cookies) > 0 {
-		setup = append(setup, network.SetCookies(cookies))
-	}
-	setup = append(setup, chromedp.Navigate(pageURL))
-	if err := chromedp.Run(runCtx, setup...); err != nil {
-		return Shots{}, fmt.Errorf("load %s: %w", hostOnly(pageURL), err)
-	}
-
-	// Wait for the page to actually be ready — past any Cloudflare/JS interstitial
-	// and showing real content — before screenshotting. A headful browser solves
-	// the "Just a moment…" challenge on its own within a few seconds; the old fixed
-	// 3.5s sleep often captured the challenge page itself.
-	waitForContent(runCtx, 15*time.Second)
 
 	var out Shots
 	for i := 0; i < maxScreens; i++ {
