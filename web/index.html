@@ -208,6 +208,7 @@
           <div class="card stat" data-status="discovered"><span class="stat-ic"><svg class="ic"><use href="#i-search"/></svg></span><div class="stat-num" id="statDiscovered">0</div><div class="stat-label">Discovered</div></div>
           <div class="card stat" data-status="matched"><span class="stat-ic"><svg class="ic"><use href="#i-filter"/></svg></span><div class="stat-num" id="statMatched">0</div><div class="stat-label">Matched</div></div>
           <div class="card stat" data-status="ready"><span class="stat-ic"><svg class="ic"><use href="#i-check-circle"/></svg></span><div class="stat-num" id="statReady">0</div><div class="stat-label">Ready to review</div></div>
+          <div class="card stat" data-status="review"><span class="stat-ic"><svg class="ic"><use href="#i-zap"/></svg></span><div class="stat-num" id="statReview">0</div><div class="stat-label">Needs review</div></div>
           <div class="card stat" data-status="applied"><span class="stat-ic"><svg class="ic"><use href="#i-send"/></svg></span><div class="stat-num" id="statApplied">0</div><div class="stat-label">Applied</div></div>
           <div class="card stat" data-status="skipped"><span class="stat-ic"><svg class="ic"><use href="#i-x"/></svg></span><div class="stat-num" id="statSkipped">0</div><div class="stat-label">Skipped</div></div>
           <div class="card stat" data-status="error"><span class="stat-ic"><svg class="ic"><use href="#i-error"/></svg></span><div class="stat-num" id="statError">0</div><div class="stat-label">Errors</div></div>
@@ -241,6 +242,7 @@
               <option value="discovered">Discovered</option>
               <option value="matched">Matched</option>
               <option value="ready">Ready</option>
+              <option value="review">Needs review</option>
               <option value="applied">Applied</option>
               <option value="interviewing">Interviewing</option>
               <option value="offer">Offer</option>
@@ -306,6 +308,14 @@
             <textarea id="f_interest" rows="3" placeholder="e.g. Registered nurse — ICU or ER; also open to clinical educator roles"></textarea>
           </label>
 
+          <div class="reach-card">
+            <label class="reach-head">
+              <input id="f_reach" type="checkbox" />
+              <span class="reach-title"><svg class="ic"><use href="#i-zap"/></svg> Get me an interview <span class="reach-tag">reach mode</span></span>
+            </label>
+            <p class="reach-desc">Casts a wide net: keeps roles you <em>want</em> even when you're under-qualified (the relevance filter scores how well a job matches what you're after, not whether you already qualify), and tailors each résumé and cover letter as aggressively as it honestly can — pushing your real experience to its limit and leading with potential. It will <strong>not</strong> invent employers, titles, dates, degrees, certifications or metrics, because those get caught in interviews and background checks. Every application is <strong>flagged and held for your review</strong> (status “Needs review”) with the stretch claims listed, and is never auto-applied.</p>
+          </div>
+
           <h3 class="section-h"><svg class="ic"><use href="#i-pin"/></svg> Location <span class="hint">(United States only — enter a city + state, or a ZIP)</span></h3>
           <div class="form-grid">
             <label>City<input id="f_city" type="text" placeholder="Chicago" /></label>
@@ -329,10 +339,10 @@
             <label>Min match score to keep <span class="hint">(stage 3, 0–100)</span><input id="f_minscore" type="number" min="0" max="100" /></label>
           </div>
 
-          <h3 class="section-h"><svg class="ic"><use href="#i-globe"/></svg> Job sources <span class="hint">(some need a free API key — add it in Settings)</span></h3>
+          <h3 class="section-h"><svg class="ic"><use href="#i-globe"/></svg> Job sources <span class="hint">(only Adzuna and USAJobs are official APIs; add keys in Settings)</span></h3>
           <div id="sourceList" class="source-list"></div>
 
-          <h3 class="section-h"><svg class="ic"><use href="#i-scan"/></svg> Scrape method <span class="hint">(how the <em>scraped</em> boards above are fetched — API boards ignore this)</span></h3>
+          <h3 class="section-h"><svg class="ic"><use href="#i-scan"/></svg> Scrape method <span class="hint">(controls scraped boards that support browser rendering; official API boards ignore this)</span></h3>
           <div id="scrapeMode" class="mode-grid">
             <label class="mode-card">
               <input type="radio" name="scrapemode" value="blatant" />
@@ -340,7 +350,7 @@
             </label>
             <label class="mode-card">
               <input type="radio" name="scrapemode" value="stealth" />
-              <span class="mode-body"><span class="mode-name">Stealth scrape</span><span class="hint">Playwright + <code>pw-stealth-enhanced</code> evasions. Gets past Cloudflare and bot walls. No AI cost.</span></span>
+              <span class="mode-body"><span class="mode-name">Stealth scrape</span><span class="hint">Playwright + <code>pw-stealth-enhanced</code> evasions. Gets past Cloudflare and bot walls, saves a logged-in profile so you don't keep signing in, and loads boards in parallel. No AI cost.</span></span>
             </label>
             <label class="mode-card">
               <input type="radio" name="scrapemode" value="vision" />
@@ -350,9 +360,10 @@
 
           <div class="form-grid" style="margin-top:14px">
             <label class="check"><input id="bb_headful" type="checkbox" /> <span>Show the browser window while it works</span></label>
+            <label id="bb_concurrency_row" hidden>Parallel loads <span class="hint">(stealth/vision: boards loaded at once, 1–8)</span><input id="bb_concurrency" type="number" min="1" max="8" placeholder="4" /></label>
             <label id="bb_python_row" hidden>Python path <span class="hint">(optional, for stealth/vision)</span><input id="bb_python" type="text" placeholder="python" /></label>
           </div>
-          <p class="hint" id="bb_python_hint" hidden style="margin:8px 0 0;line-height:1.6">Stealth &amp; Vision drive a local Python Playwright sidecar. Install once: <code>pip install playwright pw-stealth-enhanced</code> then <code>playwright install chromium</code>. If it's missing, the app falls back to the built-in browser automatically. Works best with <em>Show the browser window</em> on.</p>
+          <p class="hint" id="bb_python_hint" hidden style="margin:8px 0 0;line-height:1.6">Stealth &amp; Vision drive a local Python Playwright sidecar. Install once: <code>pip install playwright pw-stealth-enhanced</code> then <code>playwright install chromium</code>. If it's missing, the app falls back to the built-in browser automatically. The first time you hit a captcha or sign-in, turn on <em>Show the browser window</em> and solve it once — the profile is saved, so later scrapes stay signed in.</p>
 
           <div id="visionOpts" hidden>
             <h4 class="sub-h">Vision boards <span class="hint">(which sites the vision browser searches)</span></h4>
@@ -360,12 +371,13 @@
               <label><input type="checkbox" value="indeed" data-bb /> <span>Indeed</span></label>
               <label><input type="checkbox" value="linkedin" data-bb /> <span>LinkedIn</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
               <label><input type="checkbox" value="ziprecruiter" data-bb /> <span>ZipRecruiter</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
+              <label><input type="checkbox" value="handshake" data-bb /> <span>Handshake</span> <span class="hint"><svg class="ic ic-xs"><use href="#i-user"/></svg> needs account</span></label>
               <label><input type="checkbox" value="google" data-bb /> <span>Google Jobs</span></label>
             </div>
             <div class="form-grid">
               <label>Screens per board <span class="hint">(more = more jobs, slower)</span><input id="bb_screens" type="number" min="1" max="6" /></label>
             </div>
-            <p class="hint" style="margin:8px 0 0;line-height:1.6">Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). <strong>LinkedIn and ZipRecruiter hide results behind sign-in</strong> — connect them under <em>Connected accounts</em> in Settings, or they're skipped. Indeed and Google Jobs are public.</p>
+            <p class="hint" style="margin:8px 0 0;line-height:1.6">Needs a <strong>vision-capable</strong> AI provider (Claude, Gemini, a GPT-4o-class model, or a local vision model like llava). <strong>LinkedIn, ZipRecruiter and Handshake hide results behind sign-in</strong> — connect them under <em>Connected accounts</em> in Settings, or they're skipped. Indeed and Google Jobs are public.</p>
           </div>
         </div>
       </section>
@@ -538,6 +550,9 @@
   </div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <!-- Interactive sign-in / captcha prompts raised during a stealth scrape -->
+  <div class="attention-stack" id="attentionStack"></div>
 
   <script src="app.js"></script>
 </body>

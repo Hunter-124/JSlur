@@ -62,6 +62,10 @@ type Query struct {
 	// carries the humanized fingerprint that gets past bot walls. The cookie +
 	// User-Agent in the request headers are replayed. nil = plain HTTP only.
 	Render func(ctx context.Context, url, cookie, userAgent string) (string, error)
+	// OnBlock, when set, is handed to the browser session so a sign-in/captcha wall
+	// hit during a (headful) search pauses for the user to solve it. The engine
+	// wires it to an interactive GUI prompt; nil disables interactive waiting.
+	OnBlock func(ctx context.Context, host, kind, reason string) bool
 }
 
 // logf reports a progress note via the query's Log hook, if one is set.
@@ -99,6 +103,7 @@ var Registry = map[string]Source{
 	"simplyhired":   &simplyhired{},
 	"monster":       &monster{},
 	"craigslist":    &craigslist{},
+	"handshake":     &handshake{},
 	"visionbrowser": &visionBrowser{},
 	"remotive":      &remotive{},
 	"adzuna":        &adzuna{},
@@ -111,23 +116,56 @@ var Registry = map[string]Source{
 // mode (config.ScrapeVision), wired in by the engine.
 var sourceOrder = []string{
 	"themuse", "linkedin", "indeed", "ziprecruiter", "simplyhired",
-	"monster", "craigslist", "remotive", "adzuna", "usajobs",
+	"monster", "craigslist", "handshake", "remotive", "adzuna", "usajobs",
 }
 
-// BrowserScrapeSources are the boards fetched by rendering their HTML search
-// page through a real browser, so they honour the global scrape mode (blatant /
-// stealth). Every other board hits an API/feed and ignores the mode. LinkedIn
-// (guest XHR fragment) and Craigslist (RSS) keep their specialized fetches and
-// are excluded — browser-rendering those would change/break the response.
-var BrowserScrapeSources = map[string]bool{"ziprecruiter": true, "simplyhired": true, "monster": true}
+// OfficialAPISources are the only boards backed by a first-party public API.
+// Every other user-selectable board is treated as scraped in the GUI.
+var OfficialAPISources = map[string]bool{
+	"adzuna":  true,
+	"usajobs": true,
+}
+
+// scrapeModeSources are the scraped boards that currently honor the global
+// scrape mode by fetching pages through Query.doc (which uses q.Render when the
+// engine attached one for blatant/stealth mode).
+var scrapeModeSources = map[string]bool{
+	"simplyhired": true,
+	"monster":     true,
+	"handshake":   true,
+}
+
+// IsOfficialAPISource reports whether sourceID is an official API integration.
+func IsOfficialAPISource(sourceID string) bool { return OfficialAPISources[sourceID] }
+
+// IsScrapedSource reports whether sourceID is treated as scraped in the GUI and
+// source metadata. Only Adzuna and USAJobs are official APIs.
+func IsScrapedSource(sourceID string) bool { return !IsOfficialAPISource(sourceID) }
+
+// SourceUsesScrapeMode reports whether sourceID currently honors the global
+// scrape mode settings. ZipRecruiter participates only when a connected account
+// is present, because its fallback mobile API path does not use browser render.
+func SourceUsesScrapeMode(sourceID string, creds config.SourcesConfig) bool {
+	if scrapeModeSources[sourceID] {
+		return true
+	}
+	if sourceID != "ziprecruiter" {
+		return false
+	}
+	a, ok := creds.Accounts[sourceID]
+	return ok && strings.TrimSpace(a.Cookie) != ""
+}
 
 // SourceInfo describes a source for the GUI.
 type SourceInfo struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	NeedsCredentials bool   `json:"needsCredentials"`
-	// Scrape reports whether the source is fetched by browser-rendering its page
-	// (so it obeys the global scrape mode). False means it uses an API/feed.
+	// OfficialAPI is true only for first-party API integrations (Adzuna/USAJobs).
+	OfficialAPI bool `json:"officialApi"`
+	// Scrape reports whether the source is treated as scraped in the GUI. This is
+	// true for every non-official source, even if its fetch path does not consume
+	// the global scrape mode.
 	Scrape bool `json:"scrape"`
 }
 
@@ -136,7 +174,14 @@ func AvailableSources() []SourceInfo {
 	out := make([]SourceInfo, 0, len(Registry))
 	for _, id := range sourceOrder {
 		if s, ok := Registry[id]; ok {
-			out = append(out, SourceInfo{ID: id, Name: s.Name(), NeedsCredentials: s.NeedsCredentials(), Scrape: BrowserScrapeSources[id]})
+			official := IsOfficialAPISource(id)
+			out = append(out, SourceInfo{
+				ID:               id,
+				Name:             s.Name(),
+				NeedsCredentials: s.NeedsCredentials(),
+				OfficialAPI:      official,
+				Scrape:           !official,
+			})
 		}
 	}
 	return out

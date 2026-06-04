@@ -9,24 +9,36 @@ package engine
 import (
 	"context"
 	"path/filepath"
-	"sync"
+	"strings"
 
 	"autoapply/internal/browser"
 	"autoapply/internal/config"
 	"autoapply/internal/jobs"
 )
 
-// serialRenderer serializes concurrent RenderHTML calls onto one browser. The
-// scraping sources run in parallel, but a single browser session (especially
-// chromedp's lone target) must be driven one request at a time.
-type serialRenderer struct {
-	mu sync.Mutex
-	r  browser.Renderer
+// boundedRenderer gates concurrent RenderHTML calls onto one browser. The
+// scraping sources run in parallel; the chromedp engine has a single target and
+// must be driven one request at a time (slots == 1), while the Python stealth
+// sidecar drives several tabs at once (slots == configured concurrency).
+type boundedRenderer struct {
+	r    browser.Renderer
+	slot chan struct{}
 }
 
-func (s *serialRenderer) render(ctx context.Context, url, cookie, ua string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func newBoundedRenderer(r browser.Renderer, concurrency int) *boundedRenderer {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	return &boundedRenderer{r: r, slot: make(chan struct{}, concurrency)}
+}
+
+func (s *boundedRenderer) render(ctx context.Context, url, cookie, ua string) (string, error) {
+	select {
+	case s.slot <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-s.slot }()
 	return s.r.RenderHTML(ctx, url, cookie, ua)
 }
 
@@ -38,30 +50,43 @@ func (e *Engine) attachRenderer(ctx context.Context, cfg config.Config, q *jobs.
 	if !cfg.Sources.Browser.RendersScrapes() {
 		return nil
 	}
-	enabled := false
+	var enabledSources []string
 	for _, id := range cfg.Focus.Sources {
-		if jobs.BrowserScrapeSources[id] {
-			enabled = true
-			break
+		if jobs.SourceUsesScrapeMode(id, cfg.Sources) {
+			enabledSources = append(enabledSources, id)
 		}
 	}
-	if !enabled {
+	if len(enabledSources) == 0 {
 		return nil
 	}
 
+	// The chromedp engine has one browser target and must stay serial; the Python
+	// stealth sidecar loads several boards in parallel tabs.
+	concurrency := 1
+	if cfg.Sources.Browser.Engine() == "python" {
+		concurrency = cfg.Sources.Browser.ScrapeConcurrency()
+	}
+
 	r, note, err := browser.NewRenderer(ctx, browser.SessionOptions{
-		Headful:    cfg.Sources.Browser.Headful,
-		ProfileDir: e.scrapeProfileDir(),
-		Engine:     cfg.Sources.Browser.Engine(),
-		PythonPath: cfg.Sources.Browser.PythonPath,
+		Headful:        cfg.Sources.Browser.Headful,
+		ProfileDir:     e.scrapeProfileDir(),
+		Engine:         cfg.Sources.Browser.Engine(),
+		PythonPath:     cfg.Sources.Browser.PythonPath,
+		MaxConcurrency: concurrency,
+		Notify:         func(level, msg string) { e.logf(level, "scrape browser: %s", msg) },
+		OnBlock:        e.blockHandler(cfg),
 	})
 	if err != nil {
 		e.logf("warn", "%s scraping: couldn't start a browser (%v) — scrapers will use plain HTTP", cfg.Sources.Browser.Mode(), err)
 		return nil
 	}
-	e.logf("info", "%s scraping: ZipRecruiter/SimplyHired/Monster will render through the %s", cfg.Sources.Browser.Mode(), note)
-	sr := &serialRenderer{r: r}
-	q.Render = sr.render
+	if concurrency > 1 {
+		e.logf("info", "%s scraping: %s will render through the %s (up to %d in parallel)", cfg.Sources.Browser.Mode(), strings.Join(enabledSources, ", "), note, concurrency)
+	} else {
+		e.logf("info", "%s scraping: %s will render through the %s", cfg.Sources.Browser.Mode(), strings.Join(enabledSources, ", "), note)
+	}
+	br := newBoundedRenderer(r, concurrency)
+	q.Render = br.render
 	return r.Close
 }
 

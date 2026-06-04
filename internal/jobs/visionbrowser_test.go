@@ -125,7 +125,12 @@ func TestReadListingsAttachesURLsFromLinks(t *testing.T) {
 		},
 	}
 	var firstErr error
-	jobs := visionBrowser{}.readListings(context.Background(), q, visionBoards["indeed"], shots, 25, &firstErr)
+	recordErr := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	jobs := visionBrowser{}.readListings(context.Background(), q, visionBoards["indeed"], shots, 25, recordErr)
 	if firstErr != nil {
 		t.Fatalf("unexpected err: %v", firstErr)
 	}

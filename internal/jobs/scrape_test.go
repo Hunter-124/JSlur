@@ -113,6 +113,36 @@ func TestLinkedInParsePage(t *testing.T) {
 	}
 }
 
+func TestLinkedinLocation(t *testing.T) {
+	cases := []struct {
+		name string
+		loc  config.Location
+		want string
+	}{
+		// The Spain bug: a bare ZIP must NOT be sent — LinkedIn geocodes it globally
+		// and 28405 (Wilmington, NC) resolves to the Madrid, Spain region. We send
+		// the city + state derived from the ZIP instead.
+		{"city+state+zip", config.Location{City: "Wilmington", State: "NC", Zip: "28405"}, "Wilmington, NC"},
+		{"zip only derives state", config.Location{Zip: "28405"}, "NC"},
+		{"city+zip no state", config.Location{City: "Wilmington", Zip: "28405"}, "Wilmington, NC"},
+		{"city+state", config.Location{City: "Chicago", State: "IL"}, "Chicago, IL"},
+		{"state only", config.Location{State: "TX"}, "TX"},
+		{"city only", config.Location{City: "Austin"}, "Austin"},
+		{"nothing usable", config.Location{}, ""},
+		{"unknown zip", config.Location{Zip: "00000"}, ""},
+	}
+	for _, c := range cases {
+		got := linkedinLocation(c.loc)
+		if got != c.want {
+			t.Errorf("%s: linkedinLocation(%+v) = %q, want %q", c.name, c.loc, got, c.want)
+		}
+		// Hard invariant: never a bare 5-digit ZIP (that's what searched Spain).
+		if got != "" && got == strings.TrimSpace(c.loc.Zip) {
+			t.Errorf("%s: returned a bare ZIP %q — LinkedIn reads it as a foreign postal code", c.name, got)
+		}
+	}
+}
+
 func TestCraigslistRegion(t *testing.T) {
 	cases := []struct {
 		loc  config.Location
@@ -121,6 +151,8 @@ func TestCraigslistRegion(t *testing.T) {
 		{config.Location{City: "Chicago"}, "chicago"},
 		{config.Location{City: "san francisco"}, "sfbay"},
 		{config.Location{State: "WA"}, "seattle"},
+		// Wilmington has its own subdomain; without it the NC fallback was Charlotte.
+		{config.Location{City: "Wilmington", State: "NC"}, "wilmington"},
 		{config.Location{City: "Nowheresville"}, ""},
 		{config.Location{}, ""},
 	}
@@ -128,6 +160,63 @@ func TestCraigslistRegion(t *testing.T) {
 		if got := craigslistRegion(c.loc); got != c.want {
 			t.Errorf("craigslistRegion(%+v) = %q, want %q", c.loc, got, c.want)
 		}
+	}
+}
+
+func TestExtractSimplyHiredJobs(t *testing.T) {
+	// Mirrors SimplyHired's rendered page: a Next.js state blob with a "jobs" array
+	// (no schema.org JSON-LD). Brackets inside string values must not break parsing.
+	doc := `<html><body><script id="__NEXT_DATA__" type="application/json">
+	{"props":{"pageProps":{"searchKey":"abc","jobs":[
+	  {"jobKey":"K1","title":"Lead Mechanical Engineer","company":"GE Vernova","location":"Wilmington, NC","snippet":"Design [systems] and reports.","salaryInfo":"$89,300 - $150,000 a year","botUrl":"/job/K1"},
+	  {"jobKey":"K2","title":"Remote Design Engineer","company":"Acme","location":"United States","snippet":"Work from home.","salaryInfo":"","botUrl":"/job/K2"},
+	  {"jobKey":"","title":"","company":"","location":"","snippet":"","salaryInfo":"","botUrl":""}
+	],"relatedSearches":{"jobs":null}}}}</script></body></html>`
+
+	shs := extractSimplyHiredJobs(doc)
+	if len(shs) != 2 {
+		t.Fatalf("extracted %d listings, want 2 (the empty one dropped): %#v", len(shs), shs)
+	}
+	jobs := shJobsToStore("simplyhired", shs, 25)
+	if len(jobs) != 2 {
+		t.Fatalf("converted %d jobs, want 2", len(jobs))
+	}
+	var lead, remote store.Job
+	for _, j := range jobs {
+		switch j.Title {
+		case "Lead Mechanical Engineer":
+			lead = j
+		case "Remote Design Engineer":
+			remote = j
+		}
+	}
+	if lead.Company != "GE Vernova" || lead.Location != "Wilmington, NC" {
+		t.Errorf("lead job = %+v", lead)
+	}
+	if lead.Salary != "$89,300 - $150,000 a year" {
+		t.Errorf("lead salary = %q", lead.Salary)
+	}
+	if lead.URL != "https://www.simplyhired.com/job/K1" {
+		t.Errorf("lead url = %q (botUrl not absolutized?)", lead.URL)
+	}
+	if !strings.Contains(lead.Description, "[systems]") {
+		t.Errorf("lead description lost bracketed text: %q", lead.Description)
+	}
+	if !remote.Remote {
+		t.Errorf("remote job not flagged remote: %+v", remote)
+	}
+}
+
+func TestJSONArrayAt(t *testing.T) {
+	// Balanced scan stops at the matching ']' and ignores brackets inside strings.
+	if got := jsonArrayAt(`[1,[2,3],"a]b"]tail`); got != `[1,[2,3],"a]b"]` {
+		t.Errorf("jsonArrayAt = %q", got)
+	}
+	if got := jsonArrayAt(`{"not":"array"}`); got != "" {
+		t.Errorf("non-array should yield empty, got %q", got)
+	}
+	if got := jsonArrayAt(`[unterminated`); got != "" {
+		t.Errorf("unbalanced should yield empty, got %q", got)
 	}
 }
 

@@ -48,7 +48,7 @@ function toast(msg, kind = "") {
   toastTimer = setTimeout(() => { t.hidden = true; }, 3400);
 }
 
-const TRACK_STATUSES = ["ready", "applied", "interviewing", "offer", "rejected", "skipped"];
+const TRACK_STATUSES = ["ready", "review", "applied", "interviewing", "offer", "rejected", "skipped"];
 
 // ---------- state ----------
 let CFG = null;
@@ -98,6 +98,7 @@ function renderConfig() {
   $("f_max").value = f.maxResultsPerSource || 25;
   $("f_minprescreen").value = f.minPrescreenScore != null ? f.minPrescreenScore : 45;
   $("f_minscore").value = f.minMatchScore || 0;
+  if ($("f_reach")) $("f_reach").checked = !!f.reachMode;
   renderSources();
   renderBrowserSearch();
 
@@ -165,9 +166,10 @@ function readProvider(id) {
 function renderSources() {
   const enabled = new Set((CFG.focus && CFG.focus.sources) || []);
   $("sourceList").innerHTML = SOURCES.map((s) => {
-    const tag = s.scrape
-      ? `<span class="src-tag scrape" title="Fetched by reading the website — obeys the scrape method below">scraped</span>`
-      : `<span class="src-tag api" title="Fetched via API/feed — not affected by the scrape method">API</span>`;
+    const officialApi = !!s.officialApi;
+    const tag = officialApi
+      ? `<span class="src-tag api" title="Fetched via the source's official API — not affected by the scrape method">API</span>`
+      : `<span class="src-tag scrape" title="Fetched by scraping (HTML/feed/unofficial endpoints). Scrape method options apply only to supported scraped boards.">scraped</span>`;
     const key = s.needsCredentials ? ` <span class="hint">${icon("key", "ic-xs")} needs key</span>` : "";
     return `<label><input type="checkbox" value="${esc(s.id)}" ${enabled.has(s.id) ? "checked" : ""}/> <span>${esc(s.name)}</span>${tag}${key}</label>`;
   }).join("");
@@ -181,6 +183,7 @@ function renderBrowserSearch() {
   document.querySelectorAll("#browserBoards input[data-bb]").forEach((i) => { i.checked = boards.has(i.value); });
   if ($("bb_headful")) $("bb_headful").checked = !!b.headful;
   if ($("bb_screens")) $("bb_screens").value = b.maxScreens || 3;
+  if ($("bb_concurrency")) $("bb_concurrency").value = b.concurrency || 4;
   if ($("bb_python")) $("bb_python").value = b.pythonPath || "";
   updateScrapeMode();
 }
@@ -198,6 +201,7 @@ function updateScrapeMode() {
   const sidecar = mode === "stealth" || mode === "vision";
   if ($("bb_python_row")) $("bb_python_row").hidden = !sidecar;
   if ($("bb_python_hint")) $("bb_python_hint").hidden = !sidecar;
+  if ($("bb_concurrency_row")) $("bb_concurrency_row").hidden = !sidecar;
   if ($("visionOpts")) $("visionOpts").hidden = mode !== "vision";
 }
 
@@ -230,6 +234,7 @@ function collectConfig() {
     maxResultsPerSource: intNum($("f_max").value, 25),
     minPrescreenScore: intNum($("f_minprescreen").value, 0),
     minMatchScore: intNum($("f_minscore").value, 0),
+    reachMode: $("f_reach") ? $("f_reach").checked : false,
   };
   CFG.ai = {
     active: $("ai_active").value,
@@ -245,6 +250,7 @@ function collectConfig() {
       boards: Array.from(document.querySelectorAll("#browserBoards input[data-bb]:checked")).map((i) => i.value),
       headful: $("bb_headful") ? $("bb_headful").checked : false,
       maxScreens: intNum($("bb_screens") ? $("bb_screens").value : 3, 3),
+      concurrency: intNum($("bb_concurrency") ? $("bb_concurrency").value : 4, 4),
       pythonPath: $("bb_python") ? $("bb_python").value.trim() : "",
     },
   });
@@ -291,6 +297,7 @@ async function loadJobs() {
 }
 
 function scoreClass(n) { return n >= 75 ? "score-high" : n >= 50 ? "score-mid" : "score-low"; }
+function statusLabel(s) { return s === "review" ? "needs review" : s; }
 
 function renderJobs() {
   const filter = $("jobFilter").value;
@@ -304,6 +311,7 @@ function renderJobs() {
   $("jobList").innerHTML = rows.map((r) => {
     const app = r.application;
     const st = app ? app.status : "discovered";
+    const reachTag = app && app.reachMode ? `<span class="reach-pill" title="Reach mode — review the stretch claims before applying">${icon("zap", "ic-xs")} reach</span>` : "";
     const hasScore = app && app.resume;
     const score = hasScore
       ? `<div class="job-score ${scoreClass(app.matchScore)}">${app.matchScore}<small>match</small></div>`
@@ -326,7 +334,8 @@ function renderJobs() {
         </div>
       </div>
       ${score}
-      <span class="badge ${st}">${esc(st)}</span>
+      ${reachTag}
+      <span class="badge ${st}">${esc(statusLabel(st))}</span>
     </div>`;
   }).join("");
 
@@ -372,12 +381,15 @@ function renderModal() {
   const channelNote = { review: "mark applied (you submit manually)", export: "save files to your export folder", email: "email it to the posting" }[(CFG.apply && CFG.apply.channel) || "review"];
 
   let boxes = "";
+  if (app.reachMode) boxes += `<div class="reach-warn">${icon("zap")}<div><b>Reach mode — review before applying.</b> These materials were aggressively tailored to win an interview for a role you may not fully qualify for. Read them end to end and make sure you can back up every claim below before you send anything.</div></div>`;
   if (official) boxes += `<div class="match-box">${icon("building")}<div><b>Official application:</b> <a href="${esc(official)}" target="_blank" rel="noopener">${esc(official)}</a></div></div>`;
-  if (!hasDocs && (app.prescreenScore || app.prescreenReason)) boxes += `<div class="match-box">${icon("filter")}<div><b>Relevance ${app.prescreenScore || 0}/100.</b> ${esc(app.prescreenReason || "")}</div></div>`;
-  if (hasDocs) boxes += `<div class="match-box">${icon("target")}<div><b>Match ${app.matchScore || 0}/100.</b> ${esc(app.matchReason || "")}</div></div>`;
+  if (!hasDocs && (app.prescreenScore || app.prescreenReason)) boxes += `<div class="match-box">${icon("filter")}<div><b>${app.reachMode ? "Wanted" : "Relevance"} ${app.prescreenScore || 0}/100.</b> ${esc(app.prescreenReason || "")}</div></div>`;
+  if (hasDocs) boxes += `<div class="match-box">${icon("target")}<div><b>${app.reachMode ? "Honest match" : "Match"} ${app.matchScore || 0}/100.</b> ${esc(app.matchReason || "")}</div></div>`;
   if (app.error) boxes += `<div class="match-box err">${icon("error")}<div><b>Error:</b> ${esc(app.error)}</div></div>`;
   if (app.strengths && app.strengths.length)
     boxes += `<div class="insight ok"><span class="insight-head">${icon("check-circle")} Strengths</span><ul>${app.strengths.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+  if (app.stretches && app.stretches.length)
+    boxes += `<div class="insight reach"><span class="insight-head">${icon("zap")} Stretch claims to defend</span><ul>${app.stretches.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if (app.gaps && app.gaps.length)
     boxes += `<div class="insight warn"><span class="insight-head">${icon("warning")} Gaps to address</span><ul>${app.gaps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
 
@@ -391,7 +403,7 @@ function renderModal() {
 
   $("modalBody").innerHTML = `
     <h2>${esc(r.job.title)}</h2>
-    <div class="sub">${esc(r.job.company || "")} · ${esc(r.job.location || "")}${r.job.remote ? " · Remote" : ""}${salary} · via ${esc(r.job.source)} <span class="badge ${st}">${esc(st)}</span></div>
+    <div class="sub">${esc(r.job.company || "")} · ${esc(r.job.location || "")}${r.job.remote ? " · Remote" : ""}${salary} · via ${esc(r.job.source)} <span class="badge ${st}">${esc(statusLabel(st))}</span>${app.reachMode ? ` <span class="reach-pill">${icon("zap", "ic-xs")} reach</span>` : ""}</div>
 
     <div class="modal-actions">
       <button class="btn" id="m_open">${icon("external")} Open posting</button>
@@ -507,6 +519,7 @@ async function loadStatus() {
   $("statDiscovered").textContent = by.discovered || 0;
   $("statMatched").textContent = by.matched || 0;
   $("statReady").textContent = by.ready || 0;
+  if ($("statReview")) $("statReview").textContent = by.review || 0;
   $("statApplied").textContent = (by.applied || 0) + (by.interviewing || 0) + (by.offer || 0);
   $("statSkipped").textContent = by.skipped || 0;
   $("statError").textContent = by.error || 0;
@@ -554,7 +567,45 @@ function connectEvents() {
     if (!ev) return;
     if (ev.type === "log") appendLog(ev);
     else if (ev.type === "refresh") { loadJobs(); loadStatus(); loadAccounts(); }
+    else if (ev.type === "attention") showAttention(ev);
+    else if (ev.type === "attention-clear") clearAttention(ev.id);
   });
+}
+
+// ---------- interactive sign-in / captcha prompts ----------
+// During a stealth scrape, when a board hits a sign-in or captcha wall in the
+// visible browser window, the engine raises an "attention" prompt and waits.
+// We show a card asking the user to deal with it in that window, then Continue.
+function showAttention(ev) {
+  if (!ev || !ev.id) return;
+  const stack = $("attentionStack");
+  if (!stack || document.getElementById("att-" + ev.id)) return; // already shown
+  const card = document.createElement("div");
+  card.className = "attention-card";
+  card.id = "att-" + ev.id;
+  const host = ev.host ? `<span class="att-host">${esc(ev.host)}</span>` : "";
+  const msg = ev.message || "A job board needs you to sign in or solve a check in the browser window.";
+  card.innerHTML = `
+    <div class="att-head">${icon("shield")} Action needed ${host}</div>
+    <div class="att-msg">${esc(msg)}</div>
+    <div class="att-actions">
+      <button class="btn primary" data-att-continue>${icon("check")} Continue</button>
+      <button class="btn ghost" data-att-skip>Skip</button>
+    </div>`;
+  card.querySelector("[data-att-continue]").addEventListener("click", () => resolveAttention(ev.id, "continue"));
+  card.querySelector("[data-att-skip]").addEventListener("click", () => resolveAttention(ev.id, "skip"));
+  stack.appendChild(card);
+}
+
+async function resolveAttention(id, action) {
+  clearAttention(id);
+  try { await api("POST", "/api/attention/" + encodeURIComponent(id), { action }); }
+  catch (e) { /* prompt may have already expired/resolved — ignore */ }
+}
+
+function clearAttention(id) {
+  const el = document.getElementById("att-" + id);
+  if (el) el.remove();
 }
 
 // ---------- engine controls ----------

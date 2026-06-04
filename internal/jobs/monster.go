@@ -57,6 +57,14 @@ func (m monster) Search(ctx context.Context, q Query) ([]store.Job, error) {
 			doc, err = browser.RenderHTML(ctx, u, ua, 4*time.Second)
 		}
 		if err != nil {
+			// A bot/IP wall the stealth browser couldn't beat won't yield to a plain
+			// HTTP retry either — report it clearly instead of falling back.
+			if browser.IsBlocked(err) {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			doc, err = getDoc(ctx, u, accountHeaders(q, m.ID()))
 			if err != nil {
 				if firstErr == nil {
@@ -75,7 +83,7 @@ func (m monster) Search(ctx context.Context, q Query) ([]store.Job, error) {
 		if firstErr != nil {
 			return nil, firstErr
 		}
-		return nil, fmt.Errorf("no parseable results from Monster (no JSON-LD after rendering)")
+		return nil, fmt.Errorf("no parseable results from Monster — its page had no JSON-LD, which usually means a bot/IP wall served a placeholder; try again later or use vision mode")
 	}
 	return mapToSlice(out), nil
 }

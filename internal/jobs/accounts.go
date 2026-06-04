@@ -30,8 +30,17 @@ var AccountSpecs = map[string]AccountSpec{
 	// cookie, so we wait for the user to close the window rather than auto-detect.
 	"ziprecruiter": {"https://www.ziprecruiter.com/login", nil, "Sign in to ZipRecruiter, then close the browser window."},
 	"simplyhired":  {"https://www.simplyhired.com/search?q=jobs", []string{"cf_clearance"}, "Clear any 'are you human?' check, then close the window."},
-	"monster":      {"https://www.monster.com/jobs/search?q=jobs", []string{"cf_clearance"}, "Clear any 'are you human?' check, then close the window."},
-	"craigslist":   {"https://www.craigslist.org/", []string{"cl_b", "cl_def_lang"}, "Open Craigslist once to establish a session."},
+	// Monster sits behind DataDome (it never sets a cf_clearance), and the point
+	// of connecting it is to be signed in. So there's no single cookie that marks
+	// "done" — wait for the user to sign in and close the window (AuthCookies nil),
+	// like ZipRecruiter. Watching for cf_clearance here used to close the window
+	// instantly once another board had left a cf_clearance in the shared profile.
+	"monster":    {"https://www.monster.com/jobs/search?q=jobs", nil, "Click 'Sign in' (top-right), sign in to your Monster account, then close the window."},
+	"craigslist": {"https://www.craigslist.org/", []string{"cl_b", "cl_def_lang"}, "Open Craigslist once to establish a session."},
+	// Handshake sign-in often routes through a university SSO, so there's no single
+	// reliable post-login cookie to watch for — wait for the user to close the
+	// window (AuthCookies nil), like ZipRecruiter.
+	"handshake": {"https://app.joinhandshake.com/login", nil, "Sign in to Handshake with your school account, then close the browser window."},
 }
 
 // IsConnectable reports whether a source supports a captured account.

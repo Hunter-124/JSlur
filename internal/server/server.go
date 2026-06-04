@@ -62,6 +62,8 @@ func New(cfg *config.Store, db *store.Store, eng *engine.Engine, static fs.FS) h
 	mux.HandleFunc("POST /api/engine/stop", s.postStop)
 	mux.HandleFunc("POST /api/engine/run", s.postRun)
 
+	mux.HandleFunc("POST /api/attention/{id}", s.postAttention)
+
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/events", s.events)
 
@@ -260,8 +262,11 @@ func (s *Server) deleteJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) postSearch(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		// Generous budget: the AI Browser Search source drives a real browser and
-		// calls a vision model per board, which is much slower than HTTP scraping.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		// calls a vision model per board, which is much slower than HTTP scraping —
+		// and a headful stealth scrape may pause on a sign-in/captcha prompt while
+		// the user signs in (the engine caps that wait at ~15 min), so the search
+		// context must comfortably outlast it.
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 		defer cancel()
 		_, _ = s.engine.Search(ctx)
 	}()
@@ -369,6 +374,21 @@ func (s *Server) postStop(w http.ResponseWriter, r *http.Request) {
 func (s *Server) postRun(w http.ResponseWriter, r *http.Request) {
 	s.engine.RunOnce()
 	writeJSON(w, http.StatusAccepted, map[string]bool{"started": true})
+}
+
+// postAttention answers an interactive sign-in/captcha prompt raised during a
+// stealth scrape: {"action":"continue"} resumes scraping the page, anything else
+// skips it.
+func (s *Server) postAttention(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Action string `json:"action"`
+	}
+	_ = readJSON(r, &body)
+	if err := s.engine.ResolveAttention(r.PathValue("id"), body.Action); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // ---- live events ----

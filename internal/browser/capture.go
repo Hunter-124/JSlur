@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -72,6 +73,10 @@ func capture(ctx context.Context, loginURL string, authCookies []string, timeout
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
+		// Drop the navigator.webdriver flag — the cheapest automation tell, and the
+		// one an SSO "is this browser secure?" check reads first. Paired with the
+		// stealthJS injection below.
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-sync", true),
@@ -95,6 +100,12 @@ func capture(ctx context.Context, loginURL string, authCookies []string, timeout
 
 	var ua string
 	if err := chromedp.Run(runCtx,
+		// Install the stealth masks before the page's own scripts run, so a bot
+		// check or SSO provider doesn't see the automated-browser tells.
+		chromedp.ActionFunc(func(c context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(stealthJS).Do(c)
+			return err
+		}),
 		chromedp.Navigate(loginURL),
 		chromedp.Evaluate(`navigator.userAgent`, &ua),
 	); err != nil {

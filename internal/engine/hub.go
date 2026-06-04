@@ -7,10 +7,18 @@ import (
 
 // Event is a message broadcast to GUI clients over SSE.
 type Event struct {
-	Type    string    `json:"type"`            // "log" | "refresh"
+	Type    string    `json:"type"`            // "log" | "refresh" | "attention" | "attention-clear"
 	Level   string    `json:"level,omitempty"` // info | warn | error | success
 	Time    time.Time `json:"time"`
 	Message string    `json:"message,omitempty"`
+
+	// The fields below carry an interactive "attention" prompt: when a stealth
+	// scrape hits a sign-in/captcha wall in the visible browser, the engine asks
+	// the user to deal with it and resume. "attention" raises the prompt;
+	// "attention-clear" (same ID) takes it down once resolved/expired.
+	ID   string `json:"id,omitempty"`   // unique prompt id; the GUI replies to /api/attention/{id}
+	Kind string `json:"kind,omitempty"` // "login" | "captcha" | "cloudflare"
+	Host string `json:"host,omitempty"` // the board host the prompt is about
 }
 
 // Hub is a tiny in-process publish/subscribe broker with a bounded history so

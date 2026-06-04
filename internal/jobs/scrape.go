@@ -48,6 +48,11 @@ func fetch(ctx context.Context, method, url string, headers map[string]string, b
 		if len(snippet) > 160 {
 			snippet = snippet[:160]
 		}
+		// 403/429 on these public endpoints almost always means the IP is being
+		// rate-limited or blocked, not a bad request — say so.
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			return nil, fmt.Errorf("http %d from %s (IP rate-limited or blocked — try again later): %s", resp.StatusCode, hostOf(url), snippet)
+		}
 		return nil, fmt.Errorf("http %d from %s: %s", resp.StatusCode, hostOf(url), snippet)
 	}
 	return data, nil
@@ -343,6 +348,7 @@ var clMetros = map[string]string{
 	"pittsburgh": "pittsburgh", "cleveland": "cleveland", "columbus": "columbus",
 	"kansas city": "kansascity", "st louis": "stlouis", "salt lake city": "saltlakecity",
 	"indianapolis": "indianapolis", "raleigh": "raleigh", "baltimore": "baltimore",
+	"wilmington": "wilmington",
 }
 
 var clStates = map[string]string{

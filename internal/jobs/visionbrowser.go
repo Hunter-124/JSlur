@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	"autoapply/internal/browser"
 	"autoapply/internal/config"
@@ -60,7 +61,9 @@ var visionBoardList = []visionBoard{
 	{
 		id: "linkedin", name: "LinkedIn", account: "linkedin", requiresAccount: true,
 		searchURL: func(kw string, f config.JobFocus) string {
-			loc := f.Location.Query()
+			// Place name, never a bare ZIP: LinkedIn geocodes this globally and
+			// reads a US ZIP as a foreign postal code (see linkedinLocation).
+			loc := linkedinLocation(f.Location)
 			if loc == "" {
 				loc = "United States"
 			}
@@ -76,6 +79,11 @@ var visionBoardList = []visionBoard{
 		isPosting: func(u string) bool {
 			return strings.Contains(u, "/jobs/") || strings.Contains(u, "/job/") || strings.Contains(u, "/c/")
 		},
+	},
+	{
+		id: "handshake", name: "Handshake", account: "handshake", requiresAccount: true,
+		searchURL: func(kw string, f config.JobFocus) string { return handshakeSearchURL(kw) },
+		isPosting: isHandshakePosting,
 	},
 	{
 		id: "google", name: "Google Jobs",
@@ -123,10 +131,13 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 	}
 
 	sess, engineNote, err := browser.NewShooter(ctx, browser.SessionOptions{
-		Headful:    q.Creds.Browser.Headful,
-		ProfileDir: q.BrowserProfileDir,
-		Engine:     q.Creds.Browser.Engine(),
-		PythonPath: q.Creds.Browser.PythonPath,
+		Headful:        q.Creds.Browser.Headful,
+		ProfileDir:     q.BrowserProfileDir,
+		Engine:         q.Creds.Browser.Engine(),
+		PythonPath:     q.Creds.Browser.PythonPath,
+		MaxConcurrency: q.Creds.Browser.ScrapeConcurrency(),
+		Notify:         func(level, msg string) { q.logf(level, "%s", msg) },
+		OnBlock:        q.OnBlock,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("could not start a browser for vision search: %w", err)
@@ -139,14 +150,22 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 	}
 	q.logf("info", "AI Browser Search: using the %s; driving %s browser across %d board(s) — slower than the other sources, hang tight", engineNote, mode, len(boards))
 
-	out := map[string]store.Job{}
-	var firstErr error
+	// Build the (board × role) work list, resolving each board's connected session
+	// up front (and logging the per-board account decisions sequentially so the log
+	// stays readable). The actual page loads + vision reads then run in parallel.
+	type visionTask struct {
+		b          visionBoard
+		kw         string
+		label      string
+		pageURL    string
+		cookie, ua string
+	}
+	var tasks []visionTask
 	for _, boardID := range boards {
 		b, ok := visionBoards[boardID]
 		if !ok {
 			continue
 		}
-		// Replay a connected session for this board if we have one (cookies + UA).
 		cookie, ua := "", ""
 		if b.account != "" {
 			if acc, ok := q.Creds.Accounts[b.account]; ok && acc.Cookie != "" {
@@ -161,43 +180,87 @@ func (vb visionBrowser) Search(ctx context.Context, q Query) ([]store.Job, error
 			}
 		}
 		for _, kw := range queries {
-			if ctx.Err() != nil {
-				break
-			}
 			label := b.name
 			if kw != "" {
 				label = fmt.Sprintf("%s — %q", b.name, kw)
 			}
-			pageURL := b.searchURL(kw, q.Focus)
-			q.logf("info", "%s: opening search results…", label)
-			shots, err := sess.Shots(ctx, pageURL, cookie, ua, maxScreens)
-			if err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				q.logf("warn", "%s: could not load the page (%v)", label, err)
-				continue
-			}
-			if len(shots.Images) == 0 {
-				q.logf("warn", "%s: captured no screenshots", label)
-				continue
-			}
-			if reason := looksLikeWall(shots.Title, shots.Text); reason != "" {
-				q.logf("warn", "%s: the page looks like %s (%q) — connect this account in Settings or try another board", label, reason, strings.TrimSpace(shots.Title))
-			}
-			found := vb.readListings(ctx, q, b, shots, perBoard, &firstErr)
-			if len(found) == 0 {
-				q.logf("info", "%s: the model read no listings from %d screenshot(s) (page title: %q)", label, len(shots.Images), strings.TrimSpace(shots.Title))
-			} else {
-				q.logf("info", "%s: read %d listing(s) from %d screenshot(s)", label, len(found), len(shots.Images))
-			}
-			for _, j := range found {
-				if _, dup := out[j.ID]; !dup {
-					out[j.ID] = j
-				}
-			}
+			tasks = append(tasks, visionTask{b: b, kw: kw, label: label, pageURL: b.searchURL(kw, q.Focus), cookie: cookie, ua: ua})
 		}
 	}
+
+	var mu sync.Mutex
+	out := map[string]store.Job{}
+	var firstErr error
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+
+	// Run several boards/roles at once — the stealth sidecar loads them in parallel
+	// tabs and the vision calls are independent. Bounded by the configured
+	// concurrency so we don't overwhelm the browser or the AI endpoint.
+	workers := q.Creds.Browser.ScrapeConcurrency()
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	jobCh := make(chan visionTask)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range jobCh {
+				if ctx.Err() != nil {
+					continue
+				}
+				q.logf("info", "%s: opening search results…", t.label)
+				shots, err := sess.Shots(ctx, t.pageURL, t.cookie, t.ua, maxScreens)
+				if err != nil {
+					recordErr(err)
+					q.logf("warn", "%s: could not load the page (%v)", t.label, err)
+					continue
+				}
+				if len(shots.Images) == 0 {
+					q.logf("warn", "%s: captured no screenshots", t.label)
+					continue
+				}
+				// Prefer the engine's structured block detection; fall back to the
+				// title/text heuristic for the chromedp path / older responses.
+				if reason := shots.BlockReason; reason != "" {
+					q.logf("warn", "%s: the page hit %s (%q) — connect this account in Settings or switch to visible/headful mode to solve it once", t.label, reason, strings.TrimSpace(shots.Title))
+				} else if reason := looksLikeWall(shots.Title, shots.Text); reason != "" {
+					q.logf("warn", "%s: the page looks like %s (%q) — connect this account in Settings or try another board", t.label, reason, strings.TrimSpace(shots.Title))
+				}
+				found := vb.readListings(ctx, q, t.b, shots, perBoard, recordErr)
+				if len(found) == 0 {
+					q.logf("info", "%s: the model read no listings from %d screenshot(s) (page title: %q)", t.label, len(shots.Images), strings.TrimSpace(shots.Title))
+				} else {
+					q.logf("info", "%s: read %d listing(s) from %d screenshot(s)", t.label, len(found), len(shots.Images))
+				}
+				mu.Lock()
+				for _, j := range found {
+					if _, dup := out[j.ID]; !dup {
+						out[j.ID] = j
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, t := range tasks {
+		jobCh <- t
+	}
+	close(jobCh)
+	wg.Wait()
 
 	if len(out) == 0 && firstErr != nil {
 		return nil, firstErr
@@ -247,7 +310,7 @@ func looksLikeWall(title, text string) string {
 
 // readListings sends the screenshots (plus candidate posting links) to the
 // vision model and converts its JSON reply into store.Job records.
-func (vb visionBrowser) readListings(ctx context.Context, q Query, b visionBoard, shots browser.Shots, max int, firstErr *error) []store.Job {
+func (vb visionBrowser) readListings(ctx context.Context, q Query, b visionBoard, shots browser.Shots, max int, recordErr func(error)) []store.Job {
 	// Candidate posting links for the model to attach to listings. Keep the query
 	// string — some boards (e.g. Indeed) carry the job id there (?jk=…) — and drop
 	// only the fragment.
@@ -263,16 +326,12 @@ func (vb visionBrowser) readListings(ctx context.Context, q Query, b visionBoard
 
 	raw, err := q.Vision(ctx, buildVisionPrompt(b.name, q.Focus, links, max), shots.Images)
 	if err != nil {
-		if *firstErr == nil {
-			*firstErr = err
-		}
+		recordErr(err)
 		return nil
 	}
 	parsed, err := parseVisionJobs(raw)
 	if err != nil {
-		if *firstErr == nil {
-			*firstErr = err
-		}
+		recordErr(err)
 		return nil
 	}
 

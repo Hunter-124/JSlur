@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"autoapply/internal/config"
 	"autoapply/internal/store"
 )
 
@@ -33,7 +34,7 @@ var (
 
 func (li linkedin) Search(ctx context.Context, q Query) ([]store.Job, error) {
 	queries := searchQueries(q.Focus)
-	loc := q.Focus.Location.Query()
+	loc := linkedinLocation(q.Focus.Location)
 	if len(queries) == 0 && loc == "" && !q.Focus.IncludeRemote {
 		return nil, fmt.Errorf("describe your target roles in Job Focus to search LinkedIn")
 	}
@@ -148,4 +149,30 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// linkedinLocation returns the place NAME to send as LinkedIn's location filter.
+// LinkedIn geocodes this string, and unlike Indeed/ZipRecruiter it is global, so
+// a bare 5-digit US ZIP is read as an international postal code — e.g. 28405
+// (Wilmington, NC) resolves to the Madrid, Spain region and the search silently
+// returns Spanish jobs. We therefore never send a ZIP: build "City, ST" from the
+// configured location, deriving the state from the ZIP when the user left it
+// blank. Returns "" when nothing usable is known so the caller can fall back to a
+// nationwide US search rather than a foreign one.
+func linkedinLocation(l config.Location) string {
+	city := strings.TrimSpace(l.City)
+	state := strings.TrimSpace(l.State)
+	if state == "" {
+		state = strings.ToUpper(zipState(l.Zip)) // derive from ZIP; "" if unknown
+	}
+	switch {
+	case city != "" && state != "":
+		return city + ", " + state
+	case city != "":
+		return city
+	case state != "":
+		return state
+	default:
+		return ""
+	}
 }

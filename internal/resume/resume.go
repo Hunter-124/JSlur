@@ -20,6 +20,10 @@ type Result struct {
 	MatchReason string   `json:"match_reason"`
 	Strengths   []string `json:"strengths"`
 	Gaps        []string `json:"gaps"`
+	// Stretches is populated only in reach mode: the specific aggressive claims or
+	// framings in the materials that the candidate must be ready to defend in an
+	// interview. It's the checklist that powers the mandatory manual review.
+	Stretches   []string `json:"stretches"`
 	Resume      string   `json:"resume"`
 	CoverLetter string   `json:"cover_letter"`
 }
@@ -35,6 +39,10 @@ type Options struct {
 	// Previous holds the materials being refined (used only with Instructions).
 	PreviousResume string
 	PreviousCover  string
+	// Reach switches on the aggressive "get me an interview" style: push the
+	// candidate's real experience as hard as honestly possible and report the
+	// stretch claims, instead of the conservative, even-handed default.
+	Reach bool
 }
 
 const systemPrompt = `You are an expert career coach and professional resume writer.
@@ -55,10 +63,47 @@ Strict rules:
 Respond with ONLY a JSON object, no prose, no code fences, of exactly this shape:
 {"match_score": <int 0-100>, "match_reason": "<one or two sentences>", "strengths": ["..."], "gaps": ["..."], "resume": "<markdown>", "cover_letter": "<text>"}`
 
+// reachSystemPrompt drives the optional "get me an interview" reach mode. It
+// tells the model to make the strongest *honest* case for an under-qualified
+// candidate — pushing framing to the limit but never fabricating verifiable
+// facts (employers, titles, dates, degrees, certifications, licenses, metrics),
+// because those are exactly what a background check or interview exposes. It
+// also returns a "stretches" list so the human reviewer knows precisely which
+// claims were pushed and must be defended. The result is always flagged for
+// manual review and never auto-applied.
+const reachSystemPrompt = `You are an aggressive job-application strategist writing for a candidate who wants to land an INTERVIEW for a role that may stretch beyond their current qualifications. Make the strongest possible HONEST case that they can do this job — push right up to the line, but never cross it.
+
+Be maximally persuasive:
+- Lead with potential and impact. Frame every piece of the candidate's real experience in the target role's language and keywords. Translate transferable skills aggressively — a personal/side project becomes demonstrated initiative; informal, volunteer or academic work counts as real experience.
+- State strengths with confidence, not hedging. Present the candidate as ready for this role right now.
+- Minimise weaknesses. Do NOT volunteer gaps or shortfalls in the resume or cover letter. Reorder and reweight so the most relevant, most impressive material leads.
+- If the candidate has any genuine, demonstrable exposure to a required skill, claim working proficiency in it.
+
+Hard limits — a background check, reference call or interview WILL expose these, so crossing them gets the candidate caught and rejected, and in licensed fields (healthcare, law, finance, security clearances) it can be fraud. NEVER:
+- invent or alter employers, job titles, employment dates, or how long a role was held;
+- claim a degree, certification, license, clearance, or award the candidate does not actually hold;
+- fabricate specific numbers, metrics, named systems, or accomplishments that did not happen.
+Everything must trace back to something real in the candidate's profile. You may characterise it boldly; you may not manufacture it.
+
+Output rules:
+- Clean Markdown resume. Cover letter: 3-4 short, confident paragraphs.
+- "match_score": the candidate's HONEST fit 0-100. Do NOT inflate it — the reviewer needs the real gap; the persuasion belongs in the resume/letter, not this number.
+- "match_reason": one or two sentences on the genuine fit.
+- "strengths": 2-4 bullets making the real case for them.
+- "gaps": the real requirements they don't meet — be honest here, this is for the candidate's own eyes so they can decide and prepare (empty list only if there truly are none).
+- "stretches": 2-5 short bullets naming the SPECIFIC claims or framings in the materials that are aggressive and that the candidate must be ready to back up in an interview. This is the most important field for the human reviewer.
+
+Respond with ONLY a JSON object, no prose, no code fences, of exactly this shape:
+{"match_score": <int 0-100>, "match_reason": "<one or two sentences>", "strengths": ["..."], "gaps": ["..."], "stretches": ["..."], "resume": "<markdown>", "cover_letter": "<text>"}`
+
 // Generate produces tailored materials for job using the candidate profile.
 func Generate(ctx context.Context, p ai.Provider, cand config.Candidate, job store.Job, opts Options) (Result, error) {
+	sys := systemPrompt
+	if opts.Reach {
+		sys = reachSystemPrompt
+	}
 	raw, err := p.Generate(ctx, ai.Request{
-		System:      systemPrompt,
+		System:      sys,
 		Prompt:      buildPrompt(cand, job, opts),
 		MaxTokens:   4096,
 		Temperature: 0.7,
@@ -129,6 +174,8 @@ func buildPrompt(c config.Candidate, j store.Job, opts Options) string {
 		b.WriteString("\n\nPrevious cover letter:\n")
 		b.WriteString(truncate(opts.PreviousCover, 2000))
 		b.WriteString("\n\nReturn the full revised JSON object described in the system message.")
+	} else if opts.Reach {
+		b.WriteString("REACH MODE: the candidate wants an interview for this role even though it may exceed their current qualifications. Write an aggressive resume and a confident cover letter that make the strongest HONEST case for them under the system rules, and list the stretch claims in \"stretches\". Return the JSON object described in the system message.")
 	} else {
 		b.WriteString("Tailor the candidate's resume to this job and write a cover letter. Return the JSON object described in the system message.")
 	}
@@ -289,10 +336,16 @@ type PrescreenResult struct {
 	Reason string
 }
 
-// PrescreenBatch scores how well the candidate fits each of several jobs in a
-// SINGLE model call, returning results keyed by job ID. This is the cheap
-// stage-2 filter: one request screens many postings instead of one-per-job.
-func PrescreenBatch(ctx context.Context, p ai.Provider, cand config.Candidate, interest string, jobs []store.Job) (map[string]PrescreenResult, error) {
+// PrescreenBatch scores each of several jobs in a SINGLE model call, returning
+// results keyed by job ID. This is the cheap stage-2 filter: one request screens
+// many postings instead of one-per-job.
+//
+// When reach is false it scores honest fit (skills/role/seniority) — the default.
+// When reach is true (the "get me an interview" mode) it instead scores how well
+// each job matches what the candidate is *looking for*, ignoring whether they're
+// currently qualified, so wanted-but-stretch roles are kept rather than filtered
+// out for being a reach.
+func PrescreenBatch(ctx context.Context, p ai.Provider, cand config.Candidate, interest string, jobs []store.Job, reach bool) (map[string]PrescreenResult, error) {
 	if len(jobs) == 0 {
 		return map[string]PrescreenResult{}, nil
 	}
@@ -314,8 +367,12 @@ func PrescreenBatch(ctx context.Context, p ai.Provider, cand config.Candidate, i
 	for i, j := range jobs {
 		fmt.Fprintf(&b, "%d: %s @ %s — %s :: %s\n", i, j.Title, orDash(j.Company), orDash(j.Location), oneLine(truncate(j.Description, 220)))
 	}
-	fmt.Fprintf(&b, "\nScore how well the candidate fits EACH job (0-100, honest). Respond with ONLY a JSON array, one object per index, covering every index: "+
-		`[{"i":0,"score":<0-100>,"reason":"<short>"}, ...]. There are %d jobs (indices 0-%d).`, len(jobs), len(jobs)-1)
+	scoreInstruction := "Score how well the candidate fits EACH job (0-100, honest)."
+	if reach {
+		scoreInstruction = "The candidate wants an interview even for roles that stretch beyond their current qualifications. Score how well EACH job matches what they are LOOKING FOR — their target field/roles per the interest above — IGNORING whether they are currently qualified. 100 = exactly the kind of role they want; 0 = an unrelated field they did not ask for. Keep anything they'd be excited to interview for, even a reach."
+	}
+	fmt.Fprintf(&b, "\n%s Respond with ONLY a JSON array, one object per index, covering every index: "+
+		`[{"i":0,"score":<0-100>,"reason":"<short>"}, ...]. There are %d jobs (indices 0-%d).`, scoreInstruction, len(jobs), len(jobs)-1)
 
 	maxTok := len(jobs)*70 + 200
 	if maxTok > 4096 {

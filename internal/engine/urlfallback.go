@@ -53,10 +53,13 @@ func (e *Engine) visionFindApplyURL(ctx context.Context, job store.Job, provider
 
 	bcfg := e.cfg.Get().Sources.Browser
 	sess, _, err := browser.NewShooter(bctx, browser.SessionOptions{
-		Headful:    bcfg.Headful,
-		ProfileDir: e.visionProfileDir(),
-		Engine:     bcfg.Engine(),
-		PythonPath: bcfg.PythonPath,
+		Headful:        bcfg.Headful,
+		ProfileDir:     e.visionProfileDir(),
+		Engine:         bcfg.Engine(),
+		PythonPath:     bcfg.PythonPath,
+		MaxConcurrency: bcfg.ScrapeConcurrency(),
+		Notify:         func(level, msg string) { e.logf(level, "vision URL search: %s", msg) },
+		OnBlock:        e.blockHandler(e.cfg.Get()),
 	})
 	if err != nil {
 		e.logf("warn", "vision URL search: couldn't start a browser (%v)", err)

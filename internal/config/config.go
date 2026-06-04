@@ -75,6 +75,16 @@ type JobFocus struct {
 	// dropped by the cheap filter stage (stage 2) before tailoring. 0 disables
 	// the filter (everything is tailored).
 	MinPrescreenScore int `json:"minPrescreenScore"`
+	// ReachMode is the optional "get me an interview" mode. When on, the pipeline
+	// stops dropping roles the candidate WANTS just because they look
+	// under-qualified — the stage-2 filter scores how well a job matches what the
+	// candidate is *looking for* (not whether they're ready for it), and the
+	// stage-3 match-score auto-skip is disabled. Tailoring switches to an
+	// aggressive style that pushes the candidate's real experience as hard as it
+	// honestly can. Every application it produces is flagged (Application.ReachMode)
+	// and parked in the "review" state for manual review — it is NEVER auto-applied,
+	// even when Apply.AutoApply is on.
+	ReachMode bool `json:"reachMode"`
 }
 
 // Location is a US location with a search radius.
@@ -156,8 +166,8 @@ type SourcesConfig struct {
 }
 
 // Scrape modes select how the browser-based job boards are fetched. The mode is
-// global: it applies to every enabled board that isn't fetched through a plain
-// API/feed (see jobs.BrowserScrapeSources). API-only boards ignore it.
+// global: it applies to enabled scraped sources that support browser-rendered
+// fetches. Official API sources ignore it.
 const (
 	// ScrapeBlatant renders the scraped boards through the built-in headless
 	// browser (chromedp). Fast and zero-setup, but does nothing to hide that it's
@@ -196,6 +206,24 @@ type BrowserSearchConfig struct {
 	// (stealth and vision modes). Empty uses "python" from PATH. The sidecar needs
 	// `pip install playwright pw-stealth-enhanced` and `playwright install chromium`.
 	PythonPath string `json:"pythonPath,omitempty"`
+	// Concurrency caps how many boards/pages the stealth (Python) browser loads in
+	// parallel (separate tabs in one persistent profile). Higher is faster but uses
+	// more CPU/RAM. 0 uses a sensible default (4). The built-in chromedp engine
+	// ignores this — it has a single target and stays serial.
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
+// ScrapeConcurrency returns the effective parallelism for the stealth browser,
+// applying the default when unset and clamping to a sane range.
+func (b BrowserSearchConfig) ScrapeConcurrency() int {
+	c := b.Concurrency
+	if c <= 0 {
+		return 4
+	}
+	if c > 8 {
+		return 8
+	}
+	return c
 }
 
 // Mode returns the effective scrape mode, applying the default when unset.

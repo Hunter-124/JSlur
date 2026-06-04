@@ -41,11 +41,92 @@ type Engine struct {
 
 	catMu    sync.Mutex
 	catCache map[string][]jobs.Category // AI category picks, keyed by source+interest
+
+	promptMu  sync.Mutex
+	promptSeq int
+	prompts   map[string]chan bool // pending interactive sign-in/captcha prompts, by id
 }
 
 // New creates an Engine.
 func New(cfg *config.Store, db *store.Store, hub *Hub, dataDir string) *Engine {
-	return &Engine{cfg: cfg, db: db, hub: hub, dataDir: dataDir, catCache: map[string][]jobs.Category{}}
+	return &Engine{cfg: cfg, db: db, hub: hub, dataDir: dataDir, catCache: map[string][]jobs.Category{}, prompts: map[string]chan bool{}}
+}
+
+// awaitSignIn is the browser layer's OnBlock handler. When a stealth scrape hits
+// a sign-in or captcha wall in the *visible* browser that it can't get past on
+// its own, this raises an interactive prompt in the GUI ("sign in / solve it in
+// the window, then Continue") and BLOCKS the scrape until the user resolves it,
+// the page clears on its own (the caller cancels ctx once the load finally
+// succeeds), or a generous safety timeout elapses. Returns true to keep scraping
+// the page (the persistent profile then remembers the solved state), false to
+// skip it. Wired only in headful mode — there is no window to interact with
+// otherwise.
+func (e *Engine) awaitSignIn(ctx context.Context, host, kind, reason string) bool {
+	id := e.nextPromptID()
+	ch := make(chan bool, 1)
+	e.promptMu.Lock()
+	e.prompts[id] = ch
+	e.promptMu.Unlock()
+	defer func() {
+		e.promptMu.Lock()
+		delete(e.prompts, id)
+		e.promptMu.Unlock()
+		e.hub.Publish(Event{Type: "attention-clear", ID: id})
+	}()
+
+	msg := fmt.Sprintf("%s hit %s. Sign in / solve it in the browser window, then click Continue to keep scraping (or Skip).", host, reason)
+	e.logf("warn", "%s", msg)
+	e.hub.Publish(Event{Type: "attention", ID: id, Kind: kind, Host: host, Message: msg})
+
+	select {
+	case <-ctx.Done():
+		// The load resolved on its own (user signed in) or the search was cancelled.
+		return false
+	case ok := <-ch:
+		if ok {
+			e.logf("info", "%s: continuing", host)
+		} else {
+			e.logf("info", "%s: skipped", host)
+		}
+		return ok
+	case <-time.After(15 * time.Minute):
+		e.logf("warn", "%s: no response after 15 minutes — skipping", host)
+		return false
+	}
+}
+
+// ResolveAttention answers a pending interactive prompt: action "continue" keeps
+// scraping the page, anything else skips it. Safe to call for an unknown/expired
+// id (it just reports that).
+func (e *Engine) ResolveAttention(id, action string) error {
+	e.promptMu.Lock()
+	ch := e.prompts[id]
+	e.promptMu.Unlock()
+	if ch == nil {
+		return fmt.Errorf("no pending prompt %q (it may have already resolved)", id)
+	}
+	select {
+	case ch <- action == "continue":
+	default:
+	}
+	return nil
+}
+
+func (e *Engine) nextPromptID() string {
+	e.promptMu.Lock()
+	e.promptSeq++
+	id := e.promptSeq
+	e.promptMu.Unlock()
+	return fmt.Sprintf("att%d", id)
+}
+
+// blockHandler returns the OnBlock callback for the browser layer, or nil when
+// the browser is headless (no window for the user to interact with).
+func (e *Engine) blockHandler(cfg config.Config) func(context.Context, string, string, string) bool {
+	if !cfg.Sources.Browser.Headful {
+		return nil
+	}
+	return e.awaitSignIn
 }
 
 // Hub exposes the event hub for the HTTP layer.
@@ -98,6 +179,7 @@ func (e *Engine) Search(ctx context.Context) (int, error) {
 		Vision:            e.visionFunc(provider),
 		Log:               func(level, msg string) { e.logf(level, "%s", msg) },
 		BrowserProfileDir: e.visionProfileDir(),
+		OnBlock:           e.blockHandler(cfg),
 	}
 	// Optionally render the HTML scrapers' pages through the stealth browser.
 	if closeRender := e.attachRenderer(ctx, cfg, &q); closeRender != nil {
@@ -284,6 +366,7 @@ func (e *Engine) Process(ctx context.Context, jobID, instructions string) error 
 		Instructions:   instructions,
 		PreviousResume: app.Resume,
 		PreviousCover:  app.CoverLetter,
+		Reach:          cfg.Focus.ReachMode,
 	})
 	if err != nil {
 		app.Status = store.StatusError
@@ -300,21 +383,31 @@ func (e *Engine) Process(ctx context.Context, jobID, instructions string) error 
 	app.Gaps = res.Gaps
 	app.Resume = res.Resume
 	app.CoverLetter = res.CoverLetter
+	app.ReachMode = cfg.Focus.ReachMode
+	app.Stretches = res.Stretches
 	app.Error = ""
 
-	if res.MatchScore < cfg.Focus.MinMatchScore {
+	switch {
+	case cfg.Focus.ReachMode:
+		// Reach mode disregards the qualification bar on purpose. The materials are
+		// aggressively tailored, so they never auto-skip and never auto-apply —
+		// they're parked for the user to review (and vet the stretch claims) first.
+		app.Status = store.StatusReview
+		app.Notes = "Reach mode — aggressively tailored. Review the flagged stretch claims before applying."
+		e.logf("warn", "needs review: %s @ %s (reach mode, honest match %d) — flagged for manual review before applying", job.Title, job.Company, res.MatchScore)
+	case res.MatchScore < cfg.Focus.MinMatchScore:
 		app.Status = store.StatusSkipped
 		app.Notes = fmt.Sprintf("Auto-skipped: match %d below threshold %d", res.MatchScore, cfg.Focus.MinMatchScore)
 		e.logf("info", "skipped %s @ %s (match %d < %d)", job.Title, job.Company, res.MatchScore, cfg.Focus.MinMatchScore)
-	} else {
+	default:
 		app.Status = store.StatusReady
 		e.logf("success", "ready: %s @ %s (match %d)", job.Title, job.Company, res.MatchScore)
 	}
 	_ = e.db.SaveApplication(app)
-	// For jobs that made the cut, resolve the company's own application URL so it
-	// can be applied to at the source rather than via the board it came from.
-	// Cheap path only (no site crawl) to keep the pipeline fast.
-	if app.Status == store.StatusReady && job.ApplyURL == "" {
+	// For jobs that made the cut (ready, or reach-mode awaiting review), resolve the
+	// company's own application URL so it can be applied to at the source rather than
+	// via the board it came from. Cheap path only (no site crawl) to keep it fast.
+	if (app.Status == store.StatusReady || app.Status == store.StatusReview) && job.ApplyURL == "" {
 		e.resolveOfficial(ctx, job, provider, false)
 	}
 	e.refresh()
@@ -401,11 +494,16 @@ func (e *Engine) ConnectAccount(source string) error {
 	}
 	go func() {
 		e.logf("info", "opening a browser to connect %s — sign in / clear any check, and the session is captured automatically", source)
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 		defer cancel()
-		res, err := browser.Capture(ctx, spec.LoginURL, spec.AuthCookies, 5*time.Minute)
+
+		cookie, ua, err := e.captureSession(ctx, source, spec)
 		if err != nil {
 			e.logf("error", "connect %s failed: %v", source, err)
+			return
+		}
+		if strings.TrimSpace(cookie) == "" {
+			e.logf("warn", "connect %s: no session cookies were captured — did the sign-in finish? Try again, and make sure you complete the sign-in before closing the window.", source)
 			return
 		}
 		cfg := e.cfg.Get()
@@ -413,18 +511,57 @@ func (e *Engine) ConnectAccount(source string) error {
 			cfg.Sources.Accounts = map[string]config.Account{}
 		}
 		cfg.Sources.Accounts[source] = config.Account{
-			Cookie:     res.CookieHeader(),
-			UserAgent:  res.UserAgent,
+			Cookie:     cookie,
+			UserAgent:  ua,
 			CapturedAt: time.Now(),
 		}
 		if err := e.cfg.Set(cfg); err != nil {
 			e.logf("error", "saving %s session failed: %v", source, err)
 			return
 		}
-		e.logf("success", "connected %s — captured %d cookies; scrapes will now use this session", source, len(res.Cookies))
+		e.logf("success", "connected %s — captured a signed-in session; scrapes will now replay it", source)
 		e.refresh()
 	}()
 	return nil
+}
+
+// captureSession opens a board's login page and captures the resulting session
+// (a Cookie header + the browser's User-Agent). It prefers the pw-stealth-enhanced
+// browser — a real, headful Chrome/Edge window that SSO providers accept (no
+// "this browser is insecure") and whose Cloudflare clearance is issued to a
+// fingerprint the scrapers reproduce — and falls back to the built-in chromedp
+// capture only when that sidecar can't start (e.g. Python isn't installed).
+func (e *Engine) captureSession(ctx context.Context, source string, spec jobs.AccountSpec) (cookie, userAgent string, err error) {
+	cfg := e.cfg.Get()
+	conn, cerr := browser.NewConnector(ctx, browser.SessionOptions{
+		ProfileDir: e.accountsProfileDir(),
+		Engine:     "python",
+		PythonPath: cfg.Sources.Browser.PythonPath,
+		Notify:     func(level, msg string) { e.logf(level, "connect %s: %s", source, msg) },
+	})
+	if cerr == nil {
+		defer conn.Close()
+		return conn.Connect(ctx, spec.LoginURL, spec.AuthCookies, 8*time.Minute)
+	}
+
+	// Fall back to the built-in browser. SSO sign-in may be refused as "insecure"
+	// here, so tell the user how to get the stealth browser instead.
+	e.logf("warn", "connect %s: the pw-stealth-enhanced browser couldn't start (%v) — falling back to the built-in browser. For SSO sign-ins, install it: pip install playwright pw-stealth-enhanced && playwright install chromium", source, cerr)
+	res, rerr := browser.Capture(ctx, spec.LoginURL, spec.AuthCookies, 8*time.Minute)
+	if rerr != nil {
+		return "", "", rerr
+	}
+	return res.CookieHeader(), res.UserAgent, nil
+}
+
+// accountsProfileDir is a persistent browser profile dedicated to the
+// connect-account flow, kept separate from the scrape/vision profiles so a
+// "connect" can run without colliding with an in-progress search's profile lock.
+func (e *Engine) accountsProfileDir() string {
+	if e.dataDir == "" {
+		return ""
+	}
+	return filepath.Join(e.dataDir, "accounts-profile")
 }
 
 // DisconnectAccount forgets a captured session for a source.
@@ -614,7 +751,11 @@ func (e *Engine) Filter(ctx context.Context) (matched, skipped int, err error) {
 	// filter stays cheap even when a search returns lots of jobs.
 	const batchSize = 15
 	calls := (len(pending) + batchSize - 1) / batchSize
-	e.logf("info", "filtering %d job(s) for relevance in %d AI call(s) (keep ≥ %d)…", len(pending), calls, threshold)
+	if cfg.Focus.ReachMode {
+		e.logf("info", "reach mode: filtering %d job(s) by how well they match what you want (not by whether you qualify) in %d AI call(s) (keep ≥ %d)…", len(pending), calls, threshold)
+	} else {
+		e.logf("info", "filtering %d job(s) for relevance in %d AI call(s) (keep ≥ %d)…", len(pending), calls, threshold)
+	}
 
 	for i := 0; i < len(pending); i += batchSize {
 		if ctx.Err() != nil {
@@ -625,7 +766,7 @@ func (e *Engine) Filter(ctx context.Context) (matched, skipped int, err error) {
 			end = len(pending)
 		}
 		chunk := pending[i:end]
-		results, perr := resume.PrescreenBatch(ctx, provider, cfg.Candidate, cfg.Focus.Interest, chunk)
+		results, perr := resume.PrescreenBatch(ctx, provider, cfg.Candidate, cfg.Focus.Interest, chunk, cfg.Focus.ReachMode)
 		for _, j := range chunk {
 			app, _ := e.db.GetApplication(j.ID)
 			app.JobID = j.ID
@@ -775,7 +916,10 @@ func (e *Engine) runCycle(ctx context.Context) {
 			if ctx.Err() != nil || applied >= max {
 				break
 			}
-			if r.Application != nil && r.Application.Status == store.StatusReady {
+			// Only ready, non-reach applications auto-apply. Reach-mode materials are
+			// parked in StatusReview and additionally guarded here so they always wait
+			// for a human to review the stretch claims before being submitted.
+			if r.Application != nil && r.Application.Status == store.StatusReady && !r.Application.ReachMode {
 				if err := e.Apply(ctx, r.Job.ID); err == nil {
 					applied++
 				}
